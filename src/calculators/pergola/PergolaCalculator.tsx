@@ -23,6 +23,7 @@ import {
   type PrivacyCoverageGapSource,
   type RoofCoverageGapSource,
 } from '@/lib/pergola/pergolaEngine'
+import { calculatePergolaYield, type YieldCutPlanSection, type YieldPricingRow } from '@/lib/pergola/yieldEngine'
 import {
   tubingRows,
   connectorRows,
@@ -117,7 +118,7 @@ const PIECE_ROWS = [
 type PieceCountKey = (typeof PIECE_ROWS)[number]['key']
 type PieceCounts = ReturnType<typeof calculatePergola>['pieceCounts']
 type PieceSizes = Record<PieceCountKey, string>
-type PergolaResultsSectionKey = 'overview' | 'breakdown' | 'costDetails'
+type PergolaResultsSectionKey = 'overview' | 'breakdown' | 'cutPlans' | 'costDetails'
 type PergolaSettingsSectionKey =
   | 'columnBeamThickness'
   | 'tubingSource'
@@ -218,6 +219,21 @@ const getComputedPerSupply = (costPerFt: number | null | undefined, supplyFt: nu
 }
 
 const normalizeLabel = (value: string) => value.trim().toLowerCase()
+const normalizeTubingSize = (value: string) => value.trim().toLowerCase().replace(/["'\s]/g, '')
+
+const getTubingGaugeForSize = (rows: TubeRow[], size: string): string => {
+  const normalizedSize = normalizeTubingSize(size)
+  if (!normalizedSize || normalizedSize === '-') return ''
+
+  const match = rows.find(
+    (row) =>
+      normalizeTubingSize(row.size) === normalizedSize &&
+      typeof row.gauge === 'number' &&
+      Number.isFinite(row.gauge),
+  )
+
+  return match ? String(match.gauge) : ''
+}
 
 const ADDITIONAL_ITEM_DEFAULT_UNIT_COST: Record<string, number | null> = {
   canopies: 20,
@@ -256,12 +272,14 @@ const PergolaCalculator = () => {
   const privacySyncSourceRef = useRef<PrivacyCoverageGapSource>('coverage')
   const [input, setInput] = useState<PergolaInput>(makeDefaultInput)
   const [privacyPanelsEnabled, setPrivacyPanelsEnabled] = useState(true)
-  const [columnBeamThickness, setColumnBeamThickness] = useState('0.125')
+  const [columnBeamThickness, setColumnBeamThickness] = useState('')
   const [columnBeamThickness4x4Input, setColumnBeamThickness4x4Input] = useState(DEFAULT_COLUMN_BEAM_THICKNESS_4X4)
   const [columnBeamThickness6x6Input, setColumnBeamThickness6x6Input] = useState(DEFAULT_COLUMN_BEAM_THICKNESS_6X6)
   const [roofPurlinThickness, setRoofPurlinThickness] = useState('0.12')
   const [privacyPanelPurlinThickness, setPrivacyPanelPurlinThickness] = useState('0.12')
   const [pricingSections, setPricingSections] = useState<Record<PricingSectionKey, PricingLineRow[]>>(() => createPricingSections())
+  const [yieldPlanSections, setYieldPlanSections] = useState<YieldCutPlanSection[]>([])
+  const [yieldMessage, setYieldMessage] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [bufferInput, setBufferInput] = useState('')
   const [sellMarginInput, setSellMarginInput] = useState('50')
   const [isPrintMode, setIsPrintMode] = useState(false)
@@ -269,6 +287,7 @@ const PergolaCalculator = () => {
   const [resultsSectionState, setResultsSectionState] = useState<Record<PergolaResultsSectionKey, boolean>>({
     overview: true,
     breakdown: true,
+    cutPlans: true,
     costDetails: true,
   })
   const [pieceQtyEdits, setPieceQtyEdits] = useState<Partial<Record<PieceCountKey, string>>>({})
@@ -316,12 +335,14 @@ const PergolaCalculator = () => {
   )
   const isOverviewOpen = isPrintMode || resultsSectionState.overview
   const isBreakdownOpen = isPrintMode || resultsSectionState.breakdown
+  const isCutPlansOpen = isPrintMode || resultsSectionState.cutPlans
   const isCostDetailsOpen = isPrintMode || resultsSectionState.costDetails
 
   const setAllResultsSections = (isOpen: boolean) => {
     setResultsSectionState({
       overview: isOpen,
       breakdown: isOpen,
+      cutPlans: isOpen,
       costDetails: isOpen,
     })
   }
@@ -385,7 +406,35 @@ const PergolaCalculator = () => {
   )
   const selectedColumnBeamThickness = availableColumnBeamThicknessOptions.includes(columnBeamThickness)
     ? columnBeamThickness
-    : (availableColumnBeamThicknessOptions[0] ?? '')
+    : ''
+  const isColumnBeamThicknessMissing = selectedColumnBeamThickness === ''
+
+  useEffect(() => {
+    if (columnBeamThickness && !availableColumnBeamThicknessOptions.includes(columnBeamThickness)) {
+      setColumnBeamThickness('')
+    }
+  }, [availableColumnBeamThicknessOptions, columnBeamThickness])
+
+  const roofPurlinGaugeThickness = useMemo(
+    () => getTubingGaugeForSize(tubingRowsState, input.roof.customSize.trim() || input.roof.size),
+    [input.roof.customSize, input.roof.size, tubingRowsState],
+  )
+  const privacyPanelPurlinGaugeThickness = useMemo(
+    () =>
+      privacyPanelsEnabled
+        ? getTubingGaugeForSize(tubingRowsState, input.privacy.customSize.trim() || input.privacy.size)
+        : '',
+    [input.privacy.customSize, input.privacy.size, privacyPanelsEnabled, tubingRowsState],
+  )
+
+  useEffect(() => {
+    setRoofPurlinThickness(roofPurlinGaugeThickness)
+  }, [roofPurlinGaugeThickness])
+
+  useEffect(() => {
+    setPrivacyPanelPurlinThickness(privacyPanelPurlinGaugeThickness)
+  }, [privacyPanelPurlinGaugeThickness])
+
   const sectionTotals = useMemo<Record<PricingSectionKey, number>>(
     () =>
       PRICING_SECTIONS.reduce(
@@ -477,12 +526,14 @@ const PergolaCalculator = () => {
     privacySyncSourceRef.current = 'coverage'
     setInput(makeDefaultInput())
     setPrivacyPanelsEnabled(true)
-    setColumnBeamThickness('0.125')
+    setColumnBeamThickness('')
     setColumnBeamThickness4x4Input(DEFAULT_COLUMN_BEAM_THICKNESS_4X4)
     setColumnBeamThickness6x6Input(DEFAULT_COLUMN_BEAM_THICKNESS_6X6)
     setRoofPurlinThickness('0.12')
     setPrivacyPanelPurlinThickness('0.12')
     setPricingSections(createPricingSections())
+    setYieldPlanSections([])
+    setYieldMessage(null)
     setBufferInput('')
     setSellMarginInput('50')
     setAllResultsSections(true)
@@ -691,6 +742,72 @@ const PergolaCalculator = () => {
         [section]: nextRows.length ? nextRows : [createPricingRow()],
       }
     })
+  }
+
+  const normalizeGeneratedPricingRows = (rows: YieldPricingRow[]): PricingLineRow[] =>
+    rows.length ? rows.map((row) => ({ ...row })) : [createPricingRow()]
+
+  const hasPricingRowValue = (row: PricingLineRow) =>
+    Boolean(row.item.trim() || row.quantity.trim() || row.unitCost.trim())
+
+  const refreshManualPricingRows = (section: PricingSectionKey, rows: PricingLineRow[]) => {
+    const source = rows.length ? rows : [createPricingRow()]
+    return source.map((row) => {
+      if (!row.item.trim()) return row
+      return {
+        ...row,
+        unitCost: getAutoUnitCost(section, row.item) ?? row.unitCost,
+      }
+    })
+  }
+
+  const mergeAdditionalPricingRows = (generatedRows: YieldPricingRow[], currentRows: PricingLineRow[]) => {
+    const generated = normalizeGeneratedPricingRows(generatedRows)
+    const generatedItems = new Set(generated.map((row) => normalizeLabel(row.item)).filter(Boolean))
+    const manualRows = currentRows.filter((row) => hasPricingRowValue(row) && !generatedItems.has(normalizeLabel(row.item)))
+    return [...generated, ...manualRows]
+  }
+
+  const handleCalculateYield = () => {
+    if (!selectedColumnBeamThickness) {
+      setYieldMessage({ type: 'error', message: 'Column & Beam Thickness is required.' })
+      return
+    }
+
+    const yieldResult = calculatePergolaYield({
+      input: effectiveInput,
+      beamSize: result.beamSize,
+      pieceCounts: effectivePieceCounts,
+      columnBeamThickness: selectedColumnBeamThickness,
+      roofPurlinThickness,
+      privacyPanelPurlinThickness,
+      tubingRows: tubingRowsState,
+      connectorRows: connectorRowsState,
+      endCapRows: endCapRowsState,
+      angleRows: angleRowsState,
+      flatbarRows: flatbarRowsState,
+    })
+
+    setPricingSections((prev) => ({
+      ...prev,
+      tubing: normalizeGeneratedPricingRows(yieldResult.pricingSections.tubing),
+      connectorBlocks: normalizeGeneratedPricingRows(yieldResult.pricingSections.connectorBlocks),
+      endCaps: normalizeGeneratedPricingRows(yieldResult.pricingSections.endCaps),
+      angleIron: refreshManualPricingRows('angleIron', prev.angleIron),
+      flatbar: refreshManualPricingRows('flatbar', prev.flatbar),
+      additional: mergeAdditionalPricingRows(yieldResult.pricingSections.additional, prev.additional),
+    }))
+    setYieldPlanSections(yieldResult.cutPlans)
+    setResultsSectionState((prev) => ({
+      ...prev,
+      cutPlans: true,
+      costDetails: true,
+    }))
+    setYieldMessage(
+      yieldResult.warnings.length
+        ? { type: 'error', message: yieldResult.warnings.join(' ') }
+        : { type: 'success', message: 'Yield calculated.' },
+    )
   }
   const handleExportSettingsCsv = () => {
     const rows: string[][] = [
@@ -1279,13 +1396,39 @@ const PergolaCalculator = () => {
                       <div className="grid gap-3 md:grid-cols-3">
                         <div className="space-y-2">
                           <Label>Column & Beam Thickness</Label>
-                          <Select value={selectedColumnBeamThickness} onValueChange={(value) => setColumnBeamThickness(value)}>
-                            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>                            <SelectContent>
+                          <Select
+                            value={selectedColumnBeamThickness}
+                            onValueChange={(value) => {
+                              setColumnBeamThickness(value)
+                              setYieldMessage(null)
+                            }}
+                          >
+                            <SelectTrigger
+                              className={cn('w-full', isColumnBeamThicknessMissing && 'border-destructive')}
+                              aria-required="true"
+                              aria-invalid={isColumnBeamThicknessMissing}
+                            >
+                              <SelectValue placeholder="Select thickness" />
+                            </SelectTrigger>
+                            <SelectContent>
                               {availableColumnBeamThicknessOptions.map((thickness) => (
                                 <SelectItem key={thickness} value={thickness}>{thickness}</SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
+                          {isColumnBeamThicknessMissing && (
+                            <p className="text-xs text-destructive">Column & Beam Thickness is required.</p>
+                          )}
+                          {selectedColumnBeamThickness && (
+                            <Button type="button" size="sm" onClick={handleCalculateYield}>
+                              Calculate Yield
+                            </Button>
+                          )}
+                          {yieldMessage && (
+                            <p className={cn('text-xs', yieldMessage.type === 'success' ? 'text-emerald-600' : 'text-destructive')}>
+                              {yieldMessage.message}
+                            </p>
+                          )}
                         </div>
                         <div className="space-y-2">
                           <Label>Roof Purlin Thickness</Label>
@@ -1361,7 +1504,69 @@ const PergolaCalculator = () => {
                   </Card>
                 </section>
 
-                <section id="results-cost-details" className="results-print-keep scroll-mt-24 order-3">
+                <section id="results-cut-plans" className="results-print-keep scroll-mt-24 order-3">
+                  <Card className="results-group-card gap-3">
+                    <CardHeader
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => toggleResultsSection('cutPlans')}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          toggleResultsSection('cutPlans')
+                        }
+                      }}
+                      className="flex cursor-pointer flex-row items-center justify-between gap-3"
+                    >
+                      <div>
+                        <CardTitle>Cutting Plans</CardTitle>
+                        <CardDescription>Stock cuts generated from Calculate Yield.</CardDescription>
+                      </div>
+                      <Button
+                        className="results-print-hide"
+                        variant="ghost"
+                        size="sm"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          toggleResultsSection('cutPlans')
+                        }}
+                      >
+                        {isCutPlansOpen ? 'Collapse' : 'Expand'}
+                      </Button>
+                    </CardHeader>
+                    {isCutPlansOpen && <CardContent className="space-y-4">
+                      {yieldPlanSections.length ? (
+                        yieldPlanSections.map((section) => (
+                          <div key={section.title} className="space-y-3">
+                            <h3 className="text-sm font-semibold">{section.title}</h3>
+                            <Table className="border border-border">
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead className="w-[16%]">Stock</TableHead>
+                                  <TableHead className="w-[18%]">Supply Ft</TableHead>
+                                  <TableHead>Cuts Ft</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {section.lines.map((line) => (
+                                  <TableRow key={`${section.title}-${line.stockNumber}`}>
+                                    <TableCell>{line.stockNumber}</TableCell>
+                                    <TableCell>{line.stockLengthFt}</TableCell>
+                                    <TableCell>{`{${line.cutsFt.join(', ')}}`}</TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No cutting plans calculated.</p>
+                      )}
+                    </CardContent>}
+                  </Card>
+                </section>
+
+                <section id="results-cost-details" className="results-print-keep scroll-mt-24 order-4">
                   <Card className="results-group-card gap-3">
                     <CardHeader
                       role="button"
