@@ -51,63 +51,57 @@ const roofPurlinWidth = (state: QuoteEngineState) => {
   return state.roofPurlins.orientation === 'Horizontal' ? parsed.max : parsed.min
 }
 
-const sideBeamFace = (state: QuoteEngineState, orientation: SideOrientation) => {
-  const parsed = parseDimension(state.beam.size)
-  if (!parsed.valid) return 0
-  return orientation === 'Horizontal' ? parsed.max : parsed.min
-}
-
 const sideUsableSpan = (state: QuoteEngineState, axis: 'length' | 'depth') => {
-  const width = parseDimension(state.sidePurlins.size)
+  const width = parseDimension(state.sidePurlins.customSize).valid
+    ? parseDimension(state.sidePurlins.customSize)
+    : parseDimension(state.sidePurlins.size)
   if (!width.valid) return 0
 
-  const beamFace = sideBeamFace(state, state.sidePurlins.orientation)
+  const beam = beamThickness(state.beam.size)
   if (state.sidePurlins.alignment === 'Parallel to top') {
-    const height = asInches(state.pergola.dimensions.height)
-    return Math.max(height - beamFace - state.sidePurlins.groundClearanceIn - state.sidePurlins.topClearanceIn, 0)
+    const height = round2(safeToNumber(state.pergola.dimensions.height.ft) * FT_TO_IN)
+    return Math.max(height - beam - state.sidePurlins.groundClearanceIn - state.sidePurlins.topClearanceIn, 0)
   }
 
   const spanAxis = axis === 'length' ? state.pergola.dimensions.length : state.pergola.dimensions.depth
-  return Math.max(asInches(spanAxis) - 2 * beamFace, 0)
+  return Math.max(round2(safeToNumber(spanAxis.ft) * FT_TO_IN) - 2 * beam, 0)
+}
+
+const sideSyncUsableSpan = (state: QuoteEngineState) => {
+  if (state.sidePurlins.alignment === 'Parallel to top') return sideUsableSpan(state, 'length')
+  if (state.sidePurlins.alignment === 'Parallel to height') return sideUsableSpan(state, 'length')
+  return sideUsableSpan(state, 'depth')
 }
 
 const requiredSidePurlins = (state: QuoteEngineState, axis: 'length' | 'depth') => {
   const span = sideUsableSpan(state, axis)
-  const width = parseDimension(state.sidePurlins.size)
+  const width = sidePurlinWidth(state)
   const enabled = axis === 'length' ? state.sidePurlins.countOnLength : state.sidePurlins.countOnDepth
-  if (!enabled || span <= 0 || !width.valid) return 0
-  return Math.ceil(span * (Math.max(0, Math.min(state.sidePurlins.coveragePct, 100)) / 100) / sidePurlinWidth(state))
+  if (!enabled || span <= 0 || width <= 0) return 0
+  return Math.ceil(span * (Math.max(0, safeToNumber(state.sidePurlins.coveragePct)) / 100) / width)
 }
 
 const sidePurlinWidth = (state: QuoteEngineState) => {
-  const parsed = parseDimension(state.sidePurlins.size)
+  const custom = parseDimension(state.sidePurlins.customSize)
+  const parsed = custom.valid ? custom : parseDimension(state.sidePurlins.size)
   if (!parsed.valid) return 0
   return state.sidePurlins.orientation === 'Horizontal' ? parsed.max : parsed.min
 }
 
-const coverageFromGap = (widthIn: number, spanIn: number, qty: number, gapIn: number) => {
-  if (widthIn <= 0 || spanIn <= 0 || qty <= 0) return 0
-  return ((widthIn * qty + gapIn * Math.max(qty - 1, 1)) / spanIn) * 100
-}
-
-const gapFromCoverage = (widthIn: number, spanIn: number, qty: number, coveragePct: number) => {
-  if (widthIn <= 0 || spanIn <= 0 || qty <= 1) return 0
-  return Math.max((spanIn * (Math.max(0, Math.min(coveragePct, 100)) / 100) - widthIn * qty) / (qty - 1), 0)
-}
-
-export type RoofCoverageGapResult = {
+type PurlinCoverageGapResult = {
   coveragePct: number
   gapIn: number
   purlinsRequired: number
 }
 
-export const computeRoofCoverageGapValues = (
+const computePurlinCoverageGapValues = (
   widthIn: number,
   usableSpanIn: number,
   coveragePct: number,
   gapIn: number,
   source: CoverageSource,
-): RoofCoverageGapResult => {
+  clampCoverageFromGap: boolean,
+): PurlinCoverageGapResult => {
   const width = safeToNumber(widthIn, 0)
   const usable = safeToNumber(usableSpanIn, 0)
 
@@ -129,7 +123,7 @@ export const computeRoofCoverageGapValues = (
     }
 
     return {
-      coveragePct: round2((purlinsRequired * width / usable) * 100),
+      coveragePct: round2(Math.min((purlinsRequired * width / usable) * 100, clampCoverageFromGap ? 100 : Number.POSITIVE_INFINITY)),
       gapIn: gap,
       purlinsRequired,
     }
@@ -151,6 +145,25 @@ export const computeRoofCoverageGapValues = (
     purlinsRequired,
   }
 }
+
+export type RoofCoverageGapResult = PurlinCoverageGapResult
+export type SideCoverageGapResult = PurlinCoverageGapResult
+
+export const computeRoofCoverageGapValues = (
+  widthIn: number,
+  usableSpanIn: number,
+  coveragePct: number,
+  gapIn: number,
+  source: CoverageSource,
+): RoofCoverageGapResult => computePurlinCoverageGapValues(widthIn, usableSpanIn, coveragePct, gapIn, source, false)
+
+export const computeSideCoverageGapValues = (
+  widthIn: number,
+  usableSpanIn: number,
+  coveragePct: number,
+  gapIn: number,
+  source: CoverageSource,
+): SideCoverageGapResult => computePurlinCoverageGapValues(widthIn, usableSpanIn, coveragePct, gapIn, source, true)
 const availableRoofSizes = (state: QuoteEngineState) => {
   const beam = beamThickness(state.beam.size)
   const material = normalize(state.roofPurlins.materialType)
@@ -235,15 +248,11 @@ const applyCustomSizeOverride = (state: QuoteEngineState) => {
   if (next.roofPurlins.materialType === 'Cedar') {
     next.roofPurlins.customSize = '1.5x5.5'
     next.roofPurlins.size = '1.5x5.5'
-  } else {
-    next.roofPurlins.customSize = ''
   }
 
   if (next.sidePurlins.materialType === 'Cedar') {
     next.sidePurlins.customSize = '1.5x5.5'
     next.sidePurlins.size = '1.5x5.5'
-  } else {
-    next.sidePurlins.customSize = ''
   }
 
   return next
@@ -306,33 +315,19 @@ export const computeCoverageGapRoof = (state: QuoteEngineState): QuoteEngineStat
 export const computeCoverageGapSide = (state: QuoteEngineState): QuoteEngineState => {
   const next = clone(state)
   const width = sidePurlinWidth(next)
-  const spanLength = sideUsableSpan(next, 'length')
-  const spanDepth = sideUsableSpan(next, 'depth')
-  const requiredLength = requiredSidePurlins(next, 'length')
-  const requiredDepth = requiredSidePurlins(next, 'depth')
-  next.sidePurlinsLengthRequired = requiredLength
-  next.sidePurlinsDepthRequired = requiredDepth
+  const syncSpan = sideSyncUsableSpan(next)
+  const synced = computeSideCoverageGapValues(
+    width,
+    syncSpan,
+    next.sidePurlins.coveragePct,
+    next.sidePurlins.gapIn,
+    next.private?.lastSideSync ?? 'coverage',
+  )
 
-  if ((requiredLength <= 0 && requiredDepth <= 0) || !width) {
-    next.sidePurlins.coveragePct = 0
-    next.sidePurlins.gapIn = 0
-    return next
-  }
-
-  if (next.private?.lastSideSync === 'gap') {
-    next.sidePurlins.gapIn = round2(Math.max(0, safeToNumber(next.sidePurlins.gapIn)))
-    const lengthCoverage = requiredLength > 0 ? coverageFromGap(width, spanLength, requiredLength, next.sidePurlins.gapIn) : 0
-    const depthCoverage = requiredDepth > 0 ? coverageFromGap(width, spanDepth, requiredDepth, next.sidePurlins.gapIn) : 0
-    const values = [lengthCoverage, depthCoverage].filter((value) => value > 0)
-    const average = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
-    next.sidePurlins.coveragePct = round2(Math.max(0, Math.min(average, 100)))
-    return next
-  }
-
-  next.sidePurlins.coveragePct = round2(Math.max(0, Math.min(safeToNumber(next.sidePurlins.coveragePct), 100)))
-  const lengthGap = requiredLength > 0 ? gapFromCoverage(width, spanLength, requiredLength, next.sidePurlins.coveragePct) : 0
-  const depthGap = requiredDepth > 0 ? gapFromCoverage(width, spanDepth, requiredDepth, next.sidePurlins.coveragePct) : 0
-  next.sidePurlins.gapIn = round2(Math.max(lengthGap, depthGap, 0))
+  next.sidePurlins.coveragePct = synced.coveragePct
+  next.sidePurlins.gapIn = synced.gapIn
+  next.sidePurlinsLengthRequired = requiredSidePurlins(next, 'length')
+  next.sidePurlinsDepthRequired = requiredSidePurlins(next, 'depth')
   return next
 }
 export const computePieceBreakdown = (state: QuoteEngineState): QuoteEngineState => {
@@ -979,11 +974,6 @@ export const createInitialQuoteState = (): QuoteEngineState => {
 }
 
 export const applySyncFeetInchesOnly = syncFeetInches
-
-
-
-
-
 
 
 

@@ -7,9 +7,11 @@ export type MaterialType = 'Aluminum' | 'Alumiwood' | 'Cedar'
 export type PergolaType = 'Pergola' | 'Grand Pergola'
 
 export type RoofCoverageGapSource = CoverageSource
+export type PrivacyCoverageGapSource = CoverageSource
 
 export type CalculatePergolaOptions = {
   roofSyncSource?: RoofCoverageGapSource
+  privacySyncSource?: PrivacyCoverageGapSource
 }
 
 export type PergolaInput = {
@@ -233,7 +235,25 @@ const applyRoofCoverageGap = (
   return applyQuoteChange(state, 'roofPurlins.gapIn', roof.gapIn)
 }
 
-const runEngine = (legacy: ReturnType<typeof toLegacyInput>, roofSyncSource: RoofCoverageGapSource = 'gap'): QuoteEngineState => {
+const applyPrivacyCoverageGap = (
+  state: QuoteEngineState,
+  privacy: ReturnType<typeof toLegacyInput>['privacy'],
+  source: PrivacyCoverageGapSource,
+) => {
+  if (source === 'coverage') {
+    state = applyQuoteChange(state, 'sidePurlins.gapIn', privacy.gapIn)
+    return applyQuoteChange(state, 'sidePurlins.coveragePct', privacy.coveragePct)
+  }
+
+  state = applyQuoteChange(state, 'sidePurlins.coveragePct', privacy.coveragePct)
+  return applyQuoteChange(state, 'sidePurlins.gapIn', privacy.gapIn)
+}
+
+const runEngine = (
+  legacy: ReturnType<typeof toLegacyInput>,
+  roofSyncSource: RoofCoverageGapSource = 'gap',
+  privacySyncSource: PrivacyCoverageGapSource = 'gap',
+): QuoteEngineState => {
   let state = createInitialQuoteState()
 
   state = applyQuoteChange(state, 'pergola.length.ft', legacy.dimensions.lengthFt)
@@ -257,8 +277,7 @@ const runEngine = (legacy: ReturnType<typeof toLegacyInput>, roofSyncSource: Roo
   state = applyQuoteChange(state, 'sidePurlins.countOnDepth', legacy.privacy.panelCountDepth)
   state = applyQuoteChange(state, 'sidePurlins.groundClearanceIn', legacy.privacy.groundClearanceIn)
   state = applyQuoteChange(state, 'sidePurlins.topClearanceIn', legacy.privacy.topClearanceIn)
-  state = applyQuoteChange(state, 'sidePurlins.coveragePct', legacy.privacy.coveragePct)
-  state = applyQuoteChange(state, 'sidePurlins.gapIn', legacy.privacy.gapIn)
+  state = applyPrivacyCoverageGap(state, legacy.privacy, privacySyncSource)
 
   if (!legacy.privacy.panelCountLength && !legacy.privacy.panelCountDepth) {
     state = applyQuoteChange(state, 'privacyPanelsToggle', false)
@@ -328,11 +347,24 @@ const syncPergolaRoofCoverageGap = (input: PergolaInput, source: RoofCoverageGap
   }
 }
 
+const syncPergolaPrivacyCoverageGap = (input: PergolaInput, source: PrivacyCoverageGapSource): PergolaInput => {
+  const state = runEngine(toLegacyInput(input), undefined, source)
+
+  return {
+    ...input,
+    privacy: {
+      ...input.privacy,
+      coveragePct: state.sidePurlins.coveragePct,
+      gapIn: state.sidePurlins.gapIn,
+    },
+  }
+}
+
 const calculatePergola = (input: PergolaInput, options: CalculatePergolaOptions = {}): PergolaOutput => {
   const legacy = toLegacyInput(input)
   const parity = matchParityCase(legacy)
 
-  const engineState = runEngine(legacy, options.roofSyncSource ?? 'gap')
+  const engineState = runEngine(legacy, options.roofSyncSource ?? 'gap', options.privacySyncSource ?? 'gap')
 
   if (!parity) {
     return buildOutput(engineState, legacy)
@@ -348,4 +380,4 @@ const calculatePergola = (input: PergolaInput, options: CalculatePergolaOptions 
   }
 }
 
-export { calculatePergola, syncPergolaRoofCoverageGap, validatePergolaInput }
+export { calculatePergola, syncPergolaPrivacyCoverageGap, syncPergolaRoofCoverageGap, validatePergolaInput }

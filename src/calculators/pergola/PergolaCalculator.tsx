@@ -16,9 +16,11 @@ import {
 import { Menubar, MenubarMenu, MenubarTrigger } from '@/components/ui/menubar'
 import {
   calculatePergola,
+  syncPergolaPrivacyCoverageGap,
   syncPergolaRoofCoverageGap,
   type PergolaInput,
   type PergolaType,
+  type PrivacyCoverageGapSource,
   type RoofCoverageGapSource,
 } from '@/lib/pergola/pergolaEngine'
 import {
@@ -80,7 +82,7 @@ const makeDefaultInput = (): PergolaInput => {
     },
   }
 
-  return syncPergolaRoofCoverageGap(input, 'coverage')
+  return syncPergolaPrivacyCoverageGap(syncPergolaRoofCoverageGap(input, 'coverage'), 'coverage')
 }
 
 
@@ -240,6 +242,7 @@ const parseThicknessOptions = (raw: string): string[] => {
 const PergolaCalculator = () => {
   const [unit, setUnit] = useState<'ft' | 'in'>('ft')
   const roofSyncSourceRef = useRef<RoofCoverageGapSource>('coverage')
+  const privacySyncSourceRef = useRef<PrivacyCoverageGapSource>('coverage')
   const [input, setInput] = useState<PergolaInput>(makeDefaultInput)
   const [privacyPanelsEnabled, setPrivacyPanelsEnabled] = useState(true)
   const [columnBeamThickness, setColumnBeamThickness] = useState('0.125')
@@ -287,7 +290,11 @@ const PergolaCalculator = () => {
   }, [input, privacyPanelsEnabled])
 
   const result = useMemo(
-    () => calculatePergola(effectiveInput, { roofSyncSource: roofSyncSourceRef.current }),
+    () =>
+      calculatePergola(effectiveInput, {
+        roofSyncSource: roofSyncSourceRef.current,
+        privacySyncSource: privacySyncSourceRef.current,
+      }),
     [effectiveInput],
   )
   const isOverviewOpen = isPrintMode || resultsSectionState.overview
@@ -450,6 +457,7 @@ const PergolaCalculator = () => {
 
   const resetAll = () => {
     roofSyncSourceRef.current = 'coverage'
+    privacySyncSourceRef.current = 'coverage'
     setInput(makeDefaultInput())
     setPrivacyPanelsEnabled(true)
     setColumnBeamThickness('0.125')
@@ -494,6 +502,20 @@ const PergolaCalculator = () => {
   const updateRoofGap = (gapIn: number) => {
     roofSyncSourceRef.current = 'gap'
     updateRoofInput({ gapIn }, 'gap')
+  }
+
+  const updatePrivacyInput = (updates: Partial<PergolaInput['privacy']>, source = privacySyncSourceRef.current) => {
+    setInput((prev) => syncPergolaPrivacyCoverageGap({ ...prev, privacy: { ...prev.privacy, ...updates } }, source))
+  }
+
+  const updatePrivacyCoverage = (coveragePct: number) => {
+    privacySyncSourceRef.current = 'coverage'
+    updatePrivacyInput({ coveragePct }, 'coverage')
+  }
+
+  const updatePrivacyGap = (gapIn: number) => {
+    privacySyncSourceRef.current = 'gap'
+    updatePrivacyInput({ gapIn }, 'gap')
   }
 
   const dimensionDisplay = (valueFt: number) =>
@@ -1098,20 +1120,20 @@ const PergolaCalculator = () => {
                       <CardTitle className="text-base">Privacy Panel Purlins</CardTitle>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2">
-                      <Field label="Material" value={input.privacy.material} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, material: v as PergolaInput["privacy"]["material"] } }))} options={['Aluminum', 'Alumiwood', 'Cedar']} disabled={!privacyPanelsEnabled} />
-                      <Field label="Orientation" value={input.privacy.orientation} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, orientation: v as PergolaInput["privacy"]["orientation"] } }))} options={['Horizontal', 'Vertical']} disabled={!privacyPanelsEnabled} />
-                      <Field label="Size" value={input.privacy.size} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, size: v } }))} options={result.availablePrivacySizes} disabled={!privacyPanelsEnabled} />
+                      <Field label="Material" value={input.privacy.material} onChange={(v) => updatePrivacyInput({ material: v as PergolaInput["privacy"]["material"] })} options={['Aluminum', 'Alumiwood', 'Cedar']} disabled={!privacyPanelsEnabled} />
+                      <Field label="Orientation" value={input.privacy.orientation} onChange={(v) => updatePrivacyInput({ orientation: v as PergolaInput["privacy"]["orientation"] })} options={['Horizontal', 'Vertical']} disabled={!privacyPanelsEnabled} />
+                      <Field label="Size" value={input.privacy.size} onChange={(v) => updatePrivacyInput({ size: v })} options={result.availablePrivacySizes} disabled={!privacyPanelsEnabled} />
                       <div className="space-y-2">
                         <Label>Custom Size (AxB)</Label>
-                        <Input value={input.privacy.customSize} onChange={(e) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, customSize: e.target.value } }))} placeholder="optional" disabled={!privacyPanelsEnabled} />
+                        <Input value={input.privacy.customSize} onChange={(e) => updatePrivacyInput({ customSize: e.target.value })} placeholder="optional" disabled={!privacyPanelsEnabled} />
                       </div>
-                      <Field label="Alignment" value={input.privacy.alignment} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, alignment: v as PergolaInput["privacy"]["alignment"] } }))} options={['Parallel to top', 'Parallel to height']} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="# Panels on length" value={input.privacy.panelCountLength} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, panelCountLength: v } }))} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="# Panels on depth" value={input.privacy.panelCountDepth} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, panelCountDepth: v } }))} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="Ground clearance (in)" value={input.privacy.groundClearanceIn} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, groundClearanceIn: v } }))} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="Top clearance (in)" value={input.privacy.topClearanceIn} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, topClearanceIn: v } }))} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="Coverage (%)" value={input.privacy.coveragePct} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, coveragePct: v } }))} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="Gap (in)" value={input.privacy.gapIn} onChange={(v) => setInput((prev) => ({ ...prev, privacy: { ...prev.privacy, gapIn: v } }))} disabled={!privacyPanelsEnabled} />
+                      <Field label="Alignment" value={input.privacy.alignment} onChange={(v) => updatePrivacyInput({ alignment: v as PergolaInput["privacy"]["alignment"] })} options={['Parallel to top', 'Parallel to height']} disabled={!privacyPanelsEnabled} />
+                      <NumberField label="# Panels on length" value={input.privacy.panelCountLength} onChange={(v) => updatePrivacyInput({ panelCountLength: v })} disabled={!privacyPanelsEnabled} />
+                      <NumberField label="# Panels on depth" value={input.privacy.panelCountDepth} onChange={(v) => updatePrivacyInput({ panelCountDepth: v })} disabled={!privacyPanelsEnabled} />
+                      <NumberField label="Ground clearance (in)" value={input.privacy.groundClearanceIn} onChange={(v) => updatePrivacyInput({ groundClearanceIn: v })} disabled={!privacyPanelsEnabled} />
+                      <NumberField label="Top clearance (in)" value={input.privacy.topClearanceIn} onChange={(v) => updatePrivacyInput({ topClearanceIn: v })} disabled={!privacyPanelsEnabled} />
+                      <NumberField label="Coverage (%)" value={input.privacy.coveragePct} onChange={updatePrivacyCoverage} disabled={!privacyPanelsEnabled} />
+                      <NumberField label="Gap (in)" value={input.privacy.gapIn} onChange={updatePrivacyGap} disabled={!privacyPanelsEnabled} />
                     </CardContent>
                     </Card>
                     
@@ -1914,5 +1936,4 @@ const EditableSourceTableCard = <T extends Record<string, EditableCellValue>>({
 )
 
 export default PergolaCalculator
-
 
