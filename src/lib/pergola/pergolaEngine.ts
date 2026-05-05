@@ -1,10 +1,16 @@
 import parityCasesRaw from '../../data/pergola/parity-cases.json' with { type: 'json' }
 import { applyQuoteChange, createInitialQuoteState } from './quoteEngine.ts'
-import type { QuoteEngineState } from './quoteSchema.ts'
+import type { CoverageSource, QuoteEngineState } from './quoteSchema.ts'
 
 export type MaterialType = 'Aluminum' | 'Alumiwood' | 'Cedar'
 
 export type PergolaType = 'Pergola' | 'Grand Pergola'
+
+export type RoofCoverageGapSource = CoverageSource
+
+export type CalculatePergolaOptions = {
+  roofSyncSource?: RoofCoverageGapSource
+}
 
 export type PergolaInput = {
   dimensions: {
@@ -213,7 +219,21 @@ const matchParityCase = (legacy: ReturnType<typeof toLegacyInput>) =>
     return sameInput(entry.input, candidate)
   })
 
-const runEngine = (legacy: ReturnType<typeof toLegacyInput>): QuoteEngineState => {
+const applyRoofCoverageGap = (
+  state: QuoteEngineState,
+  roof: ReturnType<typeof toLegacyInput>['roof'],
+  source: RoofCoverageGapSource,
+) => {
+  if (source === 'coverage') {
+    state = applyQuoteChange(state, 'roofPurlins.gapIn', roof.gapIn)
+    return applyQuoteChange(state, 'roofPurlins.coveragePct', roof.coveragePct)
+  }
+
+  state = applyQuoteChange(state, 'roofPurlins.coveragePct', roof.coveragePct)
+  return applyQuoteChange(state, 'roofPurlins.gapIn', roof.gapIn)
+}
+
+const runEngine = (legacy: ReturnType<typeof toLegacyInput>, roofSyncSource: RoofCoverageGapSource = 'gap'): QuoteEngineState => {
   let state = createInitialQuoteState()
 
   state = applyQuoteChange(state, 'pergola.length.ft', legacy.dimensions.lengthFt)
@@ -226,8 +246,7 @@ const runEngine = (legacy: ReturnType<typeof toLegacyInput>): QuoteEngineState =
   state = applyQuoteChange(state, 'roofPurlins.size', legacy.roof.size)
   state = applyQuoteChange(state, 'roofPurlins.customSize', legacy.roof.customSize)
   state = applyQuoteChange(state, 'roofPurlins.alignment', legacy.roof.alignment)
-  state = applyQuoteChange(state, 'roofPurlins.coveragePct', legacy.roof.coveragePct)
-  state = applyQuoteChange(state, 'roofPurlins.gapIn', legacy.roof.gapIn)
+  state = applyRoofCoverageGap(state, legacy.roof, roofSyncSource)
 
   state = applyQuoteChange(state, 'sidePurlins.materialType', legacy.privacy.material)
   state = applyQuoteChange(state, 'sidePurlins.orientation', legacy.privacy.orientation)
@@ -296,11 +315,24 @@ const validatePergolaInput = (input: PergolaInput): string[] => {
   return errors
 }
 
-const calculatePergola = (input: PergolaInput): PergolaOutput => {
+const syncPergolaRoofCoverageGap = (input: PergolaInput, source: RoofCoverageGapSource): PergolaInput => {
+  const state = runEngine(toLegacyInput(input), source)
+
+  return {
+    ...input,
+    roof: {
+      ...input.roof,
+      coveragePct: state.roofPurlins.coveragePct,
+      gapIn: state.roofPurlins.gapIn,
+    },
+  }
+}
+
+const calculatePergola = (input: PergolaInput, options: CalculatePergolaOptions = {}): PergolaOutput => {
   const legacy = toLegacyInput(input)
   const parity = matchParityCase(legacy)
 
-  const engineState = runEngine(legacy)
+  const engineState = runEngine(legacy, options.roofSyncSource ?? 'gap')
 
   if (!parity) {
     return buildOutput(engineState, legacy)
@@ -316,5 +348,4 @@ const calculatePergola = (input: PergolaInput): PergolaOutput => {
   }
 }
 
-export { calculatePergola, validatePergolaInput }
-
+export { calculatePergola, syncPergolaRoofCoverageGap, validatePergolaInput }

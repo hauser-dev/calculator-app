@@ -4,6 +4,7 @@ import { parseDimension } from './quoteParser.ts'
 import { round2, safeToNumber, toFeetFromInches, toInchesFromFeet } from './quoteUtils.ts'
 import type {
   BeamSize,
+  CoverageSource,
   MaterialType,
   QuoteEnginePrivateState,
   QuoteEngineState,
@@ -40,11 +41,12 @@ const setPrivateSync = (state: QuoteEngineState, field: QuoteFieldChange): Quote
 const roofUsableSpan = (state: QuoteEngineState) => {
   const beam = beamThickness(state.beam.size)
   const roofSpanAxis = state.roofPurlins.alignment === 'Parallel to length' ? state.pergola.dimensions.depth : state.pergola.dimensions.length
-  return Math.max(asInches(roofSpanAxis) - 2 * beam, 0)
+  return Math.max(round2(safeToNumber(roofSpanAxis.ft) * FT_TO_IN) - 2 * beam, 0)
 }
 
 const roofPurlinWidth = (state: QuoteEngineState) => {
-  const parsed = parseDimension(state.roofPurlins.size)
+  const custom = parseDimension(state.roofPurlins.customSize)
+  const parsed = custom.valid ? custom : parseDimension(state.roofPurlins.size)
   if (!parsed.valid) return 0
   return state.roofPurlins.orientation === 'Horizontal' ? parsed.max : parsed.min
 }
@@ -69,13 +71,6 @@ const sideUsableSpan = (state: QuoteEngineState, axis: 'length' | 'depth') => {
   return Math.max(asInches(spanAxis) - 2 * beamFace, 0)
 }
 
-const requiredRoofPurlins = (state: QuoteEngineState) => {
-  const span = roofUsableSpan(state)
-  const width = roofPurlinWidth(state)
-  if (width <= 0 || span <= 0) return 0
-  return Math.ceil(span * (Math.max(0, Math.min(state.roofPurlins.coveragePct, 100)) / 100) / width)
-}
-
 const requiredSidePurlins = (state: QuoteEngineState, axis: 'length' | 'depth') => {
   const span = sideUsableSpan(state, axis)
   const width = parseDimension(state.sidePurlins.size)
@@ -98,6 +93,63 @@ const coverageFromGap = (widthIn: number, spanIn: number, qty: number, gapIn: nu
 const gapFromCoverage = (widthIn: number, spanIn: number, qty: number, coveragePct: number) => {
   if (widthIn <= 0 || spanIn <= 0 || qty <= 1) return 0
   return Math.max((spanIn * (Math.max(0, Math.min(coveragePct, 100)) / 100) - widthIn * qty) / (qty - 1), 0)
+}
+
+export type RoofCoverageGapResult = {
+  coveragePct: number
+  gapIn: number
+  purlinsRequired: number
+}
+
+export const computeRoofCoverageGapValues = (
+  widthIn: number,
+  usableSpanIn: number,
+  coveragePct: number,
+  gapIn: number,
+  source: CoverageSource,
+): RoofCoverageGapResult => {
+  const width = safeToNumber(widthIn, 0)
+  const usable = safeToNumber(usableSpanIn, 0)
+
+  if (width <= 0 || usable <= 0) {
+    return { coveragePct: 0, gapIn: 0, purlinsRequired: 0 }
+  }
+
+  if (source === 'gap') {
+    const gap = safeToNumber(gapIn, 0)
+    const spacing = width + gap
+
+    if (spacing <= 0) {
+      return { coveragePct: 0, gapIn: gap, purlinsRequired: 0 }
+    }
+
+    const purlinsRequired = Math.ceil(usable / spacing)
+    if (purlinsRequired <= 0) {
+      return { coveragePct: 0, gapIn: gap, purlinsRequired: 0 }
+    }
+
+    return {
+      coveragePct: round2((purlinsRequired * width / usable) * 100),
+      gapIn: gap,
+      purlinsRequired,
+    }
+  }
+
+  const coverage = safeToNumber(coveragePct, 0)
+  const coverageRatio = coverage / 100
+
+  if (coverageRatio <= 0) {
+    return { coveragePct: round2(coverage), gapIn: 0, purlinsRequired: 0 }
+  }
+
+  const purlinsRequired = Math.max(Math.ceil((usable * coverageRatio) / width), 1)
+  const spacing = usable / purlinsRequired
+
+  return {
+    coveragePct: round2(coverage),
+    gapIn: round2(Math.max(spacing - width, 0)),
+    purlinsRequired,
+  }
 }
 const availableRoofSizes = (state: QuoteEngineState) => {
   const beam = beamThickness(state.beam.size)
@@ -237,25 +289,17 @@ export const computeCoverageGapRoof = (state: QuoteEngineState): QuoteEngineStat
   const next = clone(state)
   const span = roofUsableSpan(next)
   const width = roofPurlinWidth(next)
-  const required = width <= 0 || span <= 0 ? 0 : requiredRoofPurlins(next)
-  next.roofPurlinsRequired = required
+  const synced = computeRoofCoverageGapValues(
+    width,
+    span,
+    next.roofPurlins.coveragePct,
+    next.roofPurlins.gapIn,
+    next.private?.lastRoofSync ?? 'coverage',
+  )
 
-  if (!required || !width || !span) {
-    next.roofPurlins.coveragePct = 0
-    next.roofPurlins.gapIn = 0
-    return next
-  }
-
-  if (next.private?.lastRoofSync === 'gap') {
-    next.roofPurlins.gapIn = round2(Math.max(0, safeToNumber(next.roofPurlins.gapIn)))
-    next.roofPurlins.coveragePct = round2(
-      Math.max(0, Math.min(coverageFromGap(width, span, required, next.roofPurlins.gapIn), 100)),
-    )
-    return next
-  }
-
-  next.roofPurlins.coveragePct = round2(Math.max(0, Math.min(safeToNumber(next.roofPurlins.coveragePct), 100)))
-  next.roofPurlins.gapIn = round2(gapFromCoverage(width, span, required, next.roofPurlins.coveragePct))
+  next.roofPurlinsRequired = synced.purlinsRequired
+  next.roofPurlins.coveragePct = synced.coveragePct
+  next.roofPurlins.gapIn = synced.gapIn
   return next
 }
 
@@ -935,9 +979,6 @@ export const createInitialQuoteState = (): QuoteEngineState => {
 }
 
 export const applySyncFeetInchesOnly = syncFeetInches
-
-
-
 
 
 

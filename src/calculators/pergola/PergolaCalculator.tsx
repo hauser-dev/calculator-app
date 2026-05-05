@@ -14,7 +14,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Menubar, MenubarMenu, MenubarTrigger } from '@/components/ui/menubar'
-import { calculatePergola, type PergolaInput, type PergolaType } from '@/lib/pergola/pergolaEngine'
+import {
+  calculatePergola,
+  syncPergolaRoofCoverageGap,
+  type PergolaInput,
+  type PergolaType,
+  type RoofCoverageGapSource,
+} from '@/lib/pergola/pergolaEngine'
 import {
   tubingRows,
   connectorRows,
@@ -45,33 +51,37 @@ const formatPerSupply = (costPerFt: number | null | undefined, supplyFt: number 
   return (costPerFt * supplyFt).toFixed(2)
 }
 
-const makeDefaultInput = (): PergolaInput => ({
-  dimensions: { lengthFt: 12, depthFt: 10, heightFt: 9 },
-  type: 'Pergola',
-  electrical: 'No',
-  roof: {
-    material: 'Aluminum',
-    orientation: 'Horizontal',
-    size: '2x4',
-    customSize: '',
-    alignment: 'Parallel to length',
-    coveragePct: 80,
-    gapIn: 4,
-  },
-  privacy: {
-    material: 'Aluminum',
-    orientation: 'Vertical',
-    size: '2x4',
-    customSize: '',
-    alignment: 'Parallel to top',
-    panelCountLength: 2,
-    panelCountDepth: 2,
-    groundClearanceIn: 4,
-    topClearanceIn: 4,
-    coveragePct: 70,
-    gapIn: 3,
-  },
-})
+const makeDefaultInput = (): PergolaInput => {
+  const input: PergolaInput = {
+    dimensions: { lengthFt: 12, depthFt: 10, heightFt: 9 },
+    type: 'Pergola',
+    electrical: 'No',
+    roof: {
+      material: 'Aluminum',
+      orientation: 'Horizontal',
+      size: '2x4',
+      customSize: '',
+      alignment: 'Parallel to length',
+      coveragePct: 80,
+      gapIn: 4,
+    },
+    privacy: {
+      material: 'Aluminum',
+      orientation: 'Vertical',
+      size: '2x4',
+      customSize: '',
+      alignment: 'Parallel to top',
+      panelCountLength: 2,
+      panelCountDepth: 2,
+      groundClearanceIn: 4,
+      topClearanceIn: 4,
+      coveragePct: 70,
+      gapIn: 3,
+    },
+  }
+
+  return syncPergolaRoofCoverageGap(input, 'coverage')
+}
 
 
 
@@ -229,6 +239,7 @@ const parseThicknessOptions = (raw: string): string[] => {
 
 const PergolaCalculator = () => {
   const [unit, setUnit] = useState<'ft' | 'in'>('ft')
+  const roofSyncSourceRef = useRef<RoofCoverageGapSource>('coverage')
   const [input, setInput] = useState<PergolaInput>(makeDefaultInput)
   const [privacyPanelsEnabled, setPrivacyPanelsEnabled] = useState(true)
   const [columnBeamThickness, setColumnBeamThickness] = useState('0.125')
@@ -275,7 +286,10 @@ const PergolaCalculator = () => {
     }
   }, [input, privacyPanelsEnabled])
 
-  const result = useMemo(() => calculatePergola(effectiveInput), [effectiveInput])
+  const result = useMemo(
+    () => calculatePergola(effectiveInput, { roofSyncSource: roofSyncSourceRef.current }),
+    [effectiveInput],
+  )
   const isOverviewOpen = isPrintMode || resultsSectionState.overview
   const isBreakdownOpen = isPrintMode || resultsSectionState.breakdown
   const isCostDetailsOpen = isPrintMode || resultsSectionState.costDetails
@@ -435,6 +449,7 @@ const PergolaCalculator = () => {
   }, [input.type, input.privacy.customSize, input.privacy.size, input.roof.customSize, input.roof.size, privacyPanelsEnabled])
 
   const resetAll = () => {
+    roofSyncSourceRef.current = 'coverage'
     setInput(makeDefaultInput())
     setPrivacyPanelsEnabled(true)
     setColumnBeamThickness('0.125')
@@ -465,6 +480,20 @@ const PergolaCalculator = () => {
         [key]: toFeet(parsed, unit),
       },
     }))
+  }
+
+  const updateRoofInput = (updates: Partial<PergolaInput['roof']>, source = roofSyncSourceRef.current) => {
+    setInput((prev) => syncPergolaRoofCoverageGap({ ...prev, roof: { ...prev.roof, ...updates } }, source))
+  }
+
+  const updateRoofCoverage = (coveragePct: number) => {
+    roofSyncSourceRef.current = 'coverage'
+    updateRoofInput({ coveragePct }, 'coverage')
+  }
+
+  const updateRoofGap = (gapIn: number) => {
+    roofSyncSourceRef.current = 'gap'
+    updateRoofInput({ gapIn }, 'gap')
   }
 
   const dimensionDisplay = (valueFt: number) =>
@@ -1051,16 +1080,16 @@ const PergolaCalculator = () => {
                       <CardTitle className="text-base">Roof Purlins</CardTitle>
                     </CardHeader>
                     <CardContent className="grid gap-3 md:grid-cols-2">
-                      <Field label="Material" value={input.roof.material} onChange={(v) => setInput((prev) => ({ ...prev, roof: { ...prev.roof, material: v as PergolaInput['roof']['material'] } }))} options={['Aluminum', 'Alumiwood', 'Cedar']} />
-                      <Field label="Orientation" value={input.roof.orientation} onChange={(v) => setInput((prev) => ({ ...prev, roof: { ...prev.roof, orientation: v as PergolaInput['roof']['orientation'] } }))} options={['Horizontal', 'Vertical']} />
-                      <Field label="Size" value={input.roof.size} onChange={(v) => setInput((prev) => ({ ...prev, roof: { ...prev.roof, size: v } }))} options={result.availableRoofSizes} />
+                      <Field label="Material" value={input.roof.material} onChange={(v) => updateRoofInput({ material: v as PergolaInput['roof']['material'] })} options={['Aluminum', 'Alumiwood', 'Cedar']} />
+                      <Field label="Orientation" value={input.roof.orientation} onChange={(v) => updateRoofInput({ orientation: v as PergolaInput['roof']['orientation'] })} options={['Horizontal', 'Vertical']} />
+                      <Field label="Size" value={input.roof.size} onChange={(v) => updateRoofInput({ size: v })} options={result.availableRoofSizes} />
                       <div className="space-y-2">
                         <Label>Custom Size (AxB)</Label>
-                        <Input value={input.roof.customSize} onChange={(e) => setInput((prev) => ({ ...prev, roof: { ...prev.roof, customSize: e.target.value } }))} placeholder="optional" />
+                        <Input value={input.roof.customSize} onChange={(e) => updateRoofInput({ customSize: e.target.value })} placeholder="optional" />
                       </div>
-                      <Field label="Alignment" value={input.roof.alignment} onChange={(v) => setInput((prev) => ({ ...prev, roof: { ...prev.roof, alignment: v as PergolaInput['roof']['alignment'] } }))} options={['Parallel to length', 'Parallel to depth']} />
-                      <NumberField label="Coverage (%)" value={input.roof.coveragePct} onChange={(v) => setInput((prev) => ({ ...prev, roof: { ...prev.roof, coveragePct: v } }))} />
-                      <NumberField label="Gap (in)" value={input.roof.gapIn} onChange={(v) => setInput((prev) => ({ ...prev, roof: { ...prev.roof, gapIn: v } }))} />
+                      <Field label="Alignment" value={input.roof.alignment} onChange={(v) => updateRoofInput({ alignment: v as PergolaInput['roof']['alignment'] })} options={['Parallel to length', 'Parallel to depth']} />
+                      <NumberField label="Coverage (%)" value={input.roof.coveragePct} onChange={updateRoofCoverage} />
+                      <NumberField label="Gap (in)" value={input.roof.gapIn} onChange={updateRoofGap} />
                     </CardContent>
                   </Card>
 
@@ -1885,6 +1914,5 @@ const EditableSourceTableCard = <T extends Record<string, EditableCellValue>>({
 )
 
 export default PergolaCalculator
-
 
 
