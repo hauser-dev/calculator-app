@@ -332,30 +332,57 @@ export const computeCoverageGapSide = (state: QuoteEngineState): QuoteEngineStat
 }
 export const computePieceBreakdown = (state: QuoteEngineState): QuoteEngineState => {
   const next = clone(state)
-  const columns = Math.max(4, Math.round(safeToNumber(next.pieces.verticalColumns.qty, 4)))
-  const extraColumns = Math.max(columns - 4, 0)
-  const factor = Math.floor(extraColumns / 2) + 1
+  const columns = Math.round(safeToNumber(next.pieces.verticalColumns.qty, 4))
+  const extra = Math.max(columns - 4, 0)
+  const extraPairs = columns > 4 ? Math.trunc((columns - 4) / 2) : 0
+  const factor = Math.trunc(extra / 2) + 1
 
-  const roofReq = Math.max(0, safeToNumber(next.roofPurlinsRequired, 0))
-  const sideLengthReq = Math.max(0, safeToNumber(next.sidePurlinsLengthRequired, 0))
-  const sideDepthReq = Math.max(0, safeToNumber(next.sidePurlinsDepthRequired, 0))
+  const roofReq = safeToNumber(next.roofPurlinsRequired, 0)
+  const sideLengthReq = safeToNumber(next.sidePurlinsLengthRequired, 0)
+  const sideDepthReq = safeToNumber(next.sidePurlinsDepthRequired, 0)
+  const sideLengthPanels = Math.round(safeToNumber(next.sidePurlins.countOnLength, 0))
+  const sideDepthPanels = Math.round(safeToNumber(next.sidePurlins.countOnDepth, 0))
 
-  const roofPurlinsQty = roofReq > 0 ? roofReq + (next.roofPurlins.alignment === 'Parallel to depth' ? 2 : 0) : 0
-  const sideAdd = next.sidePurlins.alignment === 'Parallel to top' ? 2 : 0
-  const sideLengthQty = next.sidePurlins.countOnLength > 0 ? sideLengthReq + sideAdd : 0
-  const sideDepthQty = next.sidePurlins.countOnDepth > 0 ? sideDepthReq + sideAdd : 0
+  const beamsLength =
+    2 +
+    (next.sidePurlins.alignment === 'Parallel to height' ? sideLengthPanels * factor : 0) +
+    extra
+
+  const beamsDepth =
+    next.sidePurlins.alignment === 'Parallel to height'
+      ? 2 + sideDepthPanels + extraPairs
+      : 2 + extraPairs
+
+  const roofPurlinsQty =
+    next.roofPurlins.alignment === 'Parallel to length'
+      ? (Math.trunc(columns / 2) - 1) * roofReq
+      : next.roofPurlins.alignment === 'Parallel to depth'
+        ? roofReq - Math.trunc((columns - 4) / 2)
+        : roofReq
+
+  const sideLengthQty =
+    next.sidePurlins.alignment === 'Parallel to top'
+      ? (Math.trunc(columns / 2) - 1) * sideLengthReq
+      : next.sidePurlins.alignment === 'Parallel to height'
+        ? sideLengthReq - Math.trunc((columns - 4) / 2)
+        : sideLengthReq
+
+  const sideDepthQty = sideDepthReq
+
+  const standardBlocks = columns <= 4 ? 2 * columns : 8 + (columns - 4) * 3
+  const columnAccessories = Math.max(columns, 0)
 
   next.pieces = {
-    verticalColumns: { qty: columns },
-    beamsOnLength: { qty: factor * 2 },
-    beamsOnDepth: { qty: factor * 2 },
-    roofPurlins: { qty: roofPurlinsQty },
-    sidePurlinsOnLength: { qty: sideLengthQty },
-    sidePurlinsOnDepth: { qty: sideDepthQty },
-    standardBlocks: { qty: columns <= 4 ? columns * 2 : 8 + (columns - 4) * 3 },
-    feet: { qty: columns },
-    endCaps: { qty: columns },
-    canopies: { qty: columns },
+    verticalColumns: { qty: columnAccessories },
+    beamsOnLength: { qty: Math.max(beamsLength, 0) },
+    beamsOnDepth: { qty: Math.max(beamsDepth, 0) },
+    roofPurlins: { qty: Math.max(roofPurlinsQty, 0) },
+    sidePurlinsOnLength: { qty: Math.max(sideLengthQty, 0) },
+    sidePurlinsOnDepth: { qty: Math.max(sideDepthQty, 0) },
+    standardBlocks: { qty: Math.max(standardBlocks, 0) },
+    feet: { qty: columnAccessories },
+    endCaps: { qty: columnAccessories },
+    canopies: { qty: columnAccessories },
   }
 
   next.columnBeamThickness = beamThicknessBySize[next.beam.size] ?? null
@@ -974,7 +1001,6 @@ export const createInitialQuoteState = (): QuoteEngineState => {
 }
 
 export const applySyncFeetInchesOnly = syncFeetInches
-
 
 
 

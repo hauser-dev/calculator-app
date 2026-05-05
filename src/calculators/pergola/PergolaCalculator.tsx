@@ -132,6 +132,17 @@ type PricingLineRow = {
   unitCost: string
 }
 
+const parsePieceCountEdit = (raw: string | undefined): number | undefined => {
+  if (raw === undefined) return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? Math.round(parsed) : undefined
+}
+
+const formatPieceCountValue = (value: number | null | undefined) =>
+  typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
+
 const PRICING_SECTIONS: { key: PricingSectionKey; label: string }[] = [
   { key: 'tubing', label: 'Tubing' },
   { key: 'connectorBlocks', label: 'Connector Blocks' },
@@ -289,13 +300,19 @@ const PergolaCalculator = () => {
     }
   }, [input, privacyPanelsEnabled])
 
+  const verticalColumnsOverride = useMemo(
+    () => parsePieceCountEdit(pieceQtyEdits.verticalColumns),
+    [pieceQtyEdits.verticalColumns],
+  )
+
   const result = useMemo(
     () =>
       calculatePergola(effectiveInput, {
         roofSyncSource: roofSyncSourceRef.current,
         privacySyncSource: privacySyncSourceRef.current,
+        verticalColumns: verticalColumnsOverride,
       }),
-    [effectiveInput],
+    [effectiveInput, verticalColumnsOverride],
   )
   const isOverviewOpen = isPrintMode || resultsSectionState.overview
   const isBreakdownOpen = isPrintMode || resultsSectionState.breakdown
@@ -516,6 +533,16 @@ const PergolaCalculator = () => {
   const updatePrivacyGap = (gapIn: number) => {
     privacySyncSourceRef.current = 'gap'
     updatePrivacyInput({ gapIn }, 'gap')
+  }
+
+  const updatePieceQtyEdit = (key: PieceCountKey, value: string) => {
+    setPieceQtyEdits((prev) => {
+      if (key === 'verticalColumns') return { verticalColumns: value }
+      return {
+        ...prev,
+        [key]: value,
+      }
+    })
   }
 
   const dimensionDisplay = (valueFt: number) =>
@@ -1155,7 +1182,7 @@ const PergolaCalculator = () => {
                       </TableHeader>
                       <TableBody>
                         {PIECE_ROWS.map((row) => {
-                          const currentValue = pieceQtyEdits[row.key] ?? ''
+                          const currentValue = pieceQtyEdits[row.key] ?? formatPieceCountValue(result.pieceCounts[row.key])
 
                           return (
                             <TableRow key={row.key}>
@@ -1164,12 +1191,7 @@ const PergolaCalculator = () => {
                                 <Input
                                   type="number"
                                   value={currentValue}
-                                  onChange={(event) =>
-                                    setPieceQtyEdits((prev) => ({
-                                      ...prev,
-                                      [row.key]: event.target.value,
-                                    }))
-                                  }
+                                  onChange={(event) => updatePieceQtyEdit(row.key, event.target.value)}
                                 />
                               </TableCell>
                               <TableCell>
@@ -1247,11 +1269,11 @@ const PergolaCalculator = () => {
                         </div>
                         <div className="result-metric result-metric-neutral rounded-xl p-2.5">
                           <p className="text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">Roof # required</p>
-                          <p className="text-sm text-foreground">{result.roofPurlinsRequired ?? '-'}</p>
+                          <p className="text-sm text-foreground">{effectivePieceCounts.roofPurlins ?? '-'}</p>
                         </div>
                         <div className="result-metric result-metric-neutral rounded-xl p-2.5">
                           <p className="text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">Side # required (L / D)</p>
-                          <p className="text-sm text-foreground">{`${result.sidePurlinsLengthRequired ?? '-'} / ${result.sidePurlinsDepthRequired ?? '-'}`}</p>
+                          <p className="text-sm text-foreground">{`${effectivePieceCounts.sidePurlinsLength ?? '-'} / ${effectivePieceCounts.sidePurlinsDepth ?? '-'}`}</p>
                         </div>
                       </div>
                       <div className="grid gap-3 md:grid-cols-3">
@@ -1936,4 +1958,3 @@ const EditableSourceTableCard = <T extends Record<string, EditableCellValue>>({
 )
 
 export default PergolaCalculator
-

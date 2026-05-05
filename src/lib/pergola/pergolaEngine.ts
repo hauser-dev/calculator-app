@@ -12,6 +12,7 @@ export type PrivacyCoverageGapSource = CoverageSource
 export type CalculatePergolaOptions = {
   roofSyncSource?: RoofCoverageGapSource
   privacySyncSource?: PrivacyCoverageGapSource
+  verticalColumns?: number
 }
 
 export type PergolaInput = {
@@ -253,8 +254,12 @@ const runEngine = (
   legacy: ReturnType<typeof toLegacyInput>,
   roofSyncSource: RoofCoverageGapSource = 'gap',
   privacySyncSource: PrivacyCoverageGapSource = 'gap',
+  verticalColumns?: number,
 ): QuoteEngineState => {
   let state = createInitialQuoteState()
+  if (typeof verticalColumns === 'number' && Number.isFinite(verticalColumns)) {
+    state.pieces.verticalColumns.qty = Math.round(verticalColumns)
+  }
 
   state = applyQuoteChange(state, 'pergola.length.ft', legacy.dimensions.lengthFt)
   state = applyQuoteChange(state, 'pergola.depth.ft', legacy.dimensions.depthFt)
@@ -362,9 +367,14 @@ const syncPergolaPrivacyCoverageGap = (input: PergolaInput, source: PrivacyCover
 
 const calculatePergola = (input: PergolaInput, options: CalculatePergolaOptions = {}): PergolaOutput => {
   const legacy = toLegacyInput(input)
-  const parity = matchParityCase(legacy)
+  const parity = options.verticalColumns === undefined ? matchParityCase(legacy) : undefined
 
-  const engineState = runEngine(legacy, options.roofSyncSource ?? 'gap', options.privacySyncSource ?? 'gap')
+  const engineState = runEngine(
+    legacy,
+    options.roofSyncSource ?? 'gap',
+    options.privacySyncSource ?? 'gap',
+    options.verticalColumns,
+  )
 
   if (!parity) {
     return buildOutput(engineState, legacy)
