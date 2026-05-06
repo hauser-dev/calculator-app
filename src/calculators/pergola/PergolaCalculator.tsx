@@ -39,7 +39,40 @@ import {
 import { cn } from '@/lib/utils'
 import { parseCsv, serializeCsv } from '@/lib/csv'
 
-const toFeet = (value: number, unit: 'ft' | 'in') => (unit === 'ft' ? value : value / 12)
+type MeasurementUnit = 'ft' | 'in' | 'mm'
+
+const MM_PER_IN = 25.4
+const IN_PER_FT = 12
+
+const toFeet = (value: number, unit: MeasurementUnit) => {
+  if (unit === 'ft') return value
+  if (unit === 'in') return value / IN_PER_FT
+  return value / MM_PER_IN / IN_PER_FT
+}
+
+const fromFeet = (valueFt: number, unit: MeasurementUnit) => {
+  if (unit === 'ft') return valueFt
+  if (unit === 'in') return valueFt * IN_PER_FT
+  return valueFt * IN_PER_FT * MM_PER_IN
+}
+
+const toInches = (value: number, unit: MeasurementUnit) => {
+  if (unit === 'ft') return value * IN_PER_FT
+  if (unit === 'in') return value
+  return value / MM_PER_IN
+}
+
+const fromInches = (valueIn: number, unit: MeasurementUnit) => {
+  if (unit === 'ft') return valueIn / IN_PER_FT
+  if (unit === 'in') return valueIn
+  return valueIn * MM_PER_IN
+}
+
+const formatMeasurementValue = (value: number, unit: MeasurementUnit) => {
+  if (!Number.isFinite(value)) return ''
+  const precision = unit === 'mm' ? 2 : 4
+  return String(Number(value.toFixed(precision)))
+}
 
 const toNullableNumber = (raw: string): number | null => {
   const trimmed = raw.trim()
@@ -235,10 +268,7 @@ const getTubingGaugeForSize = (rows: TubeRow[], size: string): string => {
   return match ? String(match.gauge) : ''
 }
 
-const formatCutLength = (value: number) =>
-  Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '')
-
-const CutPlanDiagram = ({ line }: { line: YieldCutPlanSection['lines'][number] }) => {
+const CutPlanDiagram = ({ line, unit }: { line: YieldCutPlanSection['lines'][number]; unit: MeasurementUnit }) => {
   const viewWidth = 460
   const viewHeight = 112
   const beamX = 20
@@ -268,20 +298,21 @@ const CutPlanDiagram = ({ line }: { line: YieldCutPlanSection['lines'][number] }
   const wasteFt = Math.max(line.wasteFt, 0)
   const wasteStart = Math.max(totalCutFt, 0)
   const toX = (ft: number) => beamX + (Math.max(0, Math.min(ft, stockLength)) / stockLength) * beamWidth
+  const formatFt = (valueFt: number) => formatMeasurementValue(fromFeet(valueFt, unit), unit)
   const cutMarkers = segments
     .map((segment) => segment.end)
     .filter((position) => position < stockLength - 0.01)
 
   return (
-    <svg className="h-28 w-full min-w-[300px]" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={`Cut diagram for ${line.stockLengthFt} ft stock`}>
+    <svg className="h-28 w-full min-w-[300px]" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={`Cut diagram for ${formatFt(line.stockLengthFt)} ${unit} stock`}>
       <text x={beamX} y="14" className="fill-muted-foreground text-[10px]">
-        {`Scale: 0 ft - ${formatCutLength(line.stockLengthFt)} ft`}
+        {`Scale: 0 ${unit} - ${formatFt(line.stockLengthFt)} ${unit}`}
       </text>
       <line x1={beamX} y1="26" x2={beamX + beamWidth} y2="26" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
       <line x1={beamX} y1="22" x2={beamX} y2="30" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
       <line x1={beamX + beamWidth} y1="22" x2={beamX + beamWidth} y2="30" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
       <text x={beamX} y="40" textAnchor="middle" className="fill-muted-foreground text-[9px]">0</text>
-      <text x={beamX + beamWidth} y="40" textAnchor="middle" className="fill-muted-foreground text-[9px]">{formatCutLength(line.stockLengthFt)}</text>
+      <text x={beamX + beamWidth} y="40" textAnchor="middle" className="fill-muted-foreground text-[9px]">{formatFt(line.stockLengthFt)}</text>
 
       <rect x={beamX} y={beamY} width={beamWidth} height={beamHeight} rx="3" className="fill-muted stroke-border" strokeWidth="1" />
       {segments.map((segment, index) => {
@@ -298,7 +329,7 @@ const CutPlanDiagram = ({ line }: { line: YieldCutPlanSection['lines'][number] }
             />
             {width > 42 && (
               <text x={x + width / 2} y={beamY + 13} textAnchor="middle" className="fill-foreground text-[9px]">
-                {`${formatCutLength(segment.length)} ft`}
+                {`${formatFt(segment.length)} ${unit}`}
               </text>
             )}
           </g>
@@ -315,7 +346,7 @@ const CutPlanDiagram = ({ line }: { line: YieldCutPlanSection['lines'][number] }
           />
           {toX(stockLength) - toX(wasteStart) > 34 && (
             <text x={(toX(wasteStart) + toX(stockLength)) / 2} y={beamY + 13} textAnchor="middle" className="fill-muted-foreground text-[9px]">
-              {`${formatCutLength(wasteFt)} ft`}
+              {`${formatFt(wasteFt)} ${unit}`}
             </text>
           )}
         </g>
@@ -326,7 +357,7 @@ const CutPlanDiagram = ({ line }: { line: YieldCutPlanSection['lines'][number] }
           <g key={`${position}-${index}`}>
             <line x1={x} y1={beamY - 8} x2={x} y2={beamY + beamHeight + 22} stroke="currentColor" strokeWidth="1" strokeDasharray="3 3" className="text-destructive" />
             <text x={x} y={index % 2 === 0 ? 86 : 101} textAnchor="middle" className="fill-destructive text-[9px]">
-              {formatCutLength(position)}
+              {formatFt(position)}
             </text>
           </g>
         )
@@ -367,7 +398,7 @@ const parseThicknessOptions = (raw: string): string[] => {
 }
 
 const PergolaCalculator = () => {
-  const [unit, setUnit] = useState<'ft' | 'in'>('ft')
+  const [unit, setUnit] = useState<MeasurementUnit>('ft')
   const roofSyncSourceRef = useRef<RoofCoverageGapSource>('coverage')
   const privacySyncSourceRef = useRef<PrivacyCoverageGapSource>('coverage')
   const [input, setInput] = useState<PergolaInput>(makeDefaultInput)
@@ -646,14 +677,12 @@ const PergolaCalculator = () => {
     setSettingsBanner(null)
   }
 
-  const setDimension = (key: keyof PergolaInput['dimensions'], raw: string) => {
-    const parsed = Number(raw)
-    if (!Number.isFinite(parsed)) return
+  const setDimension = (key: keyof PergolaInput['dimensions'], valueFt: number) => {
     setInput((prev) => ({
       ...prev,
       dimensions: {
         ...prev.dimensions,
-        [key]: toFeet(parsed, unit),
+        [key]: valueFt,
       },
     }))
   }
@@ -695,9 +724,6 @@ const PergolaCalculator = () => {
       }
     })
   }
-
-  const dimensionDisplay = (valueFt: number) =>
-    unit === 'ft' ? valueFt.toString() : (valueFt * 12).toFixed(2)
 
   const typeDimensions = input.type === 'Grand Pergola' ? '6x6' : '4x4'
 
@@ -1211,7 +1237,7 @@ const PergolaCalculator = () => {
                   <Label htmlFor="measurementUnit-global">Units</Label>
                   <Select
                     value={unit}
-                    onValueChange={(value: string) => setUnit(value as 'ft' | 'in')}
+                    onValueChange={(value: string) => setUnit(value as MeasurementUnit)}
                   >
                     <SelectTrigger id="measurementUnit-global" className="w-[120px] bg-background">
                       <SelectValue placeholder="Units" />
@@ -1219,6 +1245,7 @@ const PergolaCalculator = () => {
                     <SelectContent>
                       <SelectItem value="ft">ft</SelectItem>
                       <SelectItem value="in">in</SelectItem>
+                      <SelectItem value="mm">mm</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1270,18 +1297,28 @@ const PergolaCalculator = () => {
                       <CardDescription>Enter pergola dimensions in the selected unit.</CardDescription>
                     </CardHeader>
                     <CardContent className="grid gap-4 sm:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>Length ({unit})</Label>
-                        <Input value={dimensionDisplay(input.dimensions.lengthFt)} onChange={(e) => setDimension('lengthFt', e.target.value)} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Depth ({unit})</Label>
-                        <Input value={dimensionDisplay(input.dimensions.depthFt)} onChange={(e) => setDimension('depthFt', e.target.value)} />
-                      </div>
-                      <div className="space-y-2 sm:col-span-2">
-                        <Label>Height ({unit})</Label>
-                        <Input value={dimensionDisplay(input.dimensions.heightFt)} onChange={(e) => setDimension('heightFt', e.target.value)} />
-                      </div>
+                      <UnitNumberField
+                        label="Length"
+                        unit={unit}
+                        baseUnit="ft"
+                        value={input.dimensions.lengthFt}
+                        onChange={(valueFt) => setDimension('lengthFt', valueFt)}
+                      />
+                      <UnitNumberField
+                        label="Depth"
+                        unit={unit}
+                        baseUnit="ft"
+                        value={input.dimensions.depthFt}
+                        onChange={(valueFt) => setDimension('depthFt', valueFt)}
+                      />
+                      <UnitNumberField
+                        label="Height"
+                        unit={unit}
+                        baseUnit="ft"
+                        value={input.dimensions.heightFt}
+                        onChange={(valueFt) => setDimension('heightFt', valueFt)}
+                        className="sm:col-span-2"
+                      />
                     </CardContent>
                   </Card>
 
@@ -1371,7 +1408,7 @@ const PergolaCalculator = () => {
                       </div>
                       <Field label="Alignment" value={input.roof.alignment} onChange={(v) => updateRoofInput({ alignment: v as PergolaInput['roof']['alignment'] })} options={['Parallel to length', 'Parallel to depth']} />
                       <NumberField label="Coverage (%)" value={input.roof.coveragePct} onChange={updateRoofCoverage} />
-                      <NumberField label="Gap (in)" value={input.roof.gapIn} onChange={updateRoofGap} />
+                      <UnitNumberField label="Gap" unit={unit} baseUnit="in" value={input.roof.gapIn} onChange={updateRoofGap} />
                     </CardContent>
                   </Card>
 
@@ -1390,10 +1427,10 @@ const PergolaCalculator = () => {
                       <Field label="Alignment" value={input.privacy.alignment} onChange={(v) => updatePrivacyInput({ alignment: v as PergolaInput["privacy"]["alignment"] })} options={['Parallel to top', 'Parallel to height']} disabled={!privacyPanelsEnabled} />
                       <NumberField label="# Panels on length" value={input.privacy.panelCountLength} onChange={(v) => updatePrivacyInput({ panelCountLength: v })} disabled={!privacyPanelsEnabled} />
                       <NumberField label="# Panels on depth" value={input.privacy.panelCountDepth} onChange={(v) => updatePrivacyInput({ panelCountDepth: v })} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="Ground clearance (in)" value={input.privacy.groundClearanceIn} onChange={(v) => updatePrivacyInput({ groundClearanceIn: v })} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="Top clearance (in)" value={input.privacy.topClearanceIn} onChange={(v) => updatePrivacyInput({ topClearanceIn: v })} disabled={!privacyPanelsEnabled} />
+                      <UnitNumberField label="Ground clearance" unit={unit} baseUnit="in" value={input.privacy.groundClearanceIn} onChange={(v) => updatePrivacyInput({ groundClearanceIn: v })} disabled={!privacyPanelsEnabled} />
+                      <UnitNumberField label="Top clearance" unit={unit} baseUnit="in" value={input.privacy.topClearanceIn} onChange={(v) => updatePrivacyInput({ topClearanceIn: v })} disabled={!privacyPanelsEnabled} />
                       <NumberField label="Coverage (%)" value={input.privacy.coveragePct} onChange={updatePrivacyCoverage} disabled={!privacyPanelsEnabled} />
-                      <NumberField label="Gap (in)" value={input.privacy.gapIn} onChange={updatePrivacyGap} disabled={!privacyPanelsEnabled} />
+                      <UnitNumberField label="Gap" unit={unit} baseUnit="in" value={input.privacy.gapIn} onChange={updatePrivacyGap} disabled={!privacyPanelsEnabled} />
                     </CardContent>
                     </Card>
                     
@@ -1659,8 +1696,8 @@ const PergolaCalculator = () => {
                               <TableHeader>
                                 <TableRow>
                                   <TableHead className="w-[12%]"># of Stocks</TableHead>
-                                  <TableHead className="w-[12%]">Supply Ft</TableHead>
-                                  <TableHead className="w-[24%]">Cuts Ft</TableHead>
+                                  <TableHead className="w-[12%]">Supply ({unit})</TableHead>
+                                  <TableHead className="w-[24%]">Cuts ({unit})</TableHead>
                                   <TableHead>Cut Diagram</TableHead>
                                 </TableRow>
                               </TableHeader>
@@ -1668,10 +1705,10 @@ const PergolaCalculator = () => {
                                 {section.lines.map((line) => (
                                   <TableRow key={`${section.title}-${line.stockLengthFt}-${line.cutsFt.join('-')}`}>
                                     <TableCell>{line.stockCount}</TableCell>
-                                    <TableCell>{line.stockLengthFt}</TableCell>
-                                    <TableCell>{line.cutsFt.map(formatCutLength).join(', ')}</TableCell>
+                                    <TableCell>{formatMeasurementValue(fromFeet(line.stockLengthFt, unit), unit)}</TableCell>
+                                    <TableCell>{line.cutsFt.map((cut) => formatMeasurementValue(fromFeet(cut, unit), unit)).join(', ')}</TableCell>
                                     <TableCell>
-                                      <CutPlanDiagram line={line} />
+                                      <CutPlanDiagram line={line} unit={unit} />
                                     </TableCell>
                                   </TableRow>
                                 ))}
@@ -2124,6 +2161,49 @@ type NumberFieldProps = {
   value: number
   onChange: (value: number) => void
   disabled?: boolean
+}
+
+type UnitNumberFieldProps = {
+  label: string
+  value: number
+  unit: MeasurementUnit
+  baseUnit: 'ft' | 'in'
+  onChange: (value: number) => void
+  disabled?: boolean
+  className?: string
+}
+
+const UnitNumberField = ({ label, value, unit, baseUnit, onChange, disabled, className }: UnitNumberFieldProps) => {
+  const fromDisplay = (displayValue: number) =>
+    baseUnit === 'ft' ? toFeet(displayValue, unit) : toInches(displayValue, unit)
+  const displayValue = baseUnit === 'ft' ? fromFeet(value, unit) : fromInches(value, unit)
+  const formattedValue = formatMeasurementValue(displayValue, unit)
+  const [draft, setDraft] = useState<{ value: string; isEditing: boolean }>({
+    value: '',
+    isEditing: false,
+  })
+  const inputValue = draft.isEditing ? draft.value : formattedValue
+
+  return (
+    <div className={cn('space-y-2', className)}>
+      <Label>{`${label} (${unit})`}</Label>
+      <Input
+        type="number"
+        step="any"
+        inputMode="decimal"
+        value={inputValue}
+        disabled={disabled}
+        onFocus={() => setDraft({ value: formattedValue, isEditing: true })}
+        onBlur={() => setDraft({ value: '', isEditing: false })}
+        onChange={(e) => {
+          const next = e.target.value
+          setDraft({ value: next, isEditing: true })
+          const parsed = Number(next)
+          if (Number.isFinite(parsed)) onChange(fromDisplay(parsed))
+        }}
+      />
+    </div>
+  )
 }
 
 const NumberField = ({ label, value, onChange, disabled }: NumberFieldProps) => (
