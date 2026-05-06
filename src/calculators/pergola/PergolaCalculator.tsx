@@ -235,6 +235,106 @@ const getTubingGaugeForSize = (rows: TubeRow[], size: string): string => {
   return match ? String(match.gauge) : ''
 }
 
+const formatCutLength = (value: number) =>
+  Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '')
+
+const CutPlanDiagram = ({ line }: { line: YieldCutPlanSection['lines'][number] }) => {
+  const viewWidth = 460
+  const viewHeight = 112
+  const beamX = 20
+  const beamY = 44
+  const beamWidth = 420
+  const beamHeight = 18
+  const stockLength = Math.max(line.stockLengthFt, 0.01)
+  const { segments, totalCutFt } = line.cutsFt.reduce(
+    (acc, cut, index) => {
+      const start = acc.totalCutFt
+      const end = start + cut
+      return {
+        totalCutFt: end,
+        segments: [
+          ...acc.segments,
+          {
+            key: `${index}-${cut}`,
+            start,
+            end,
+            length: cut,
+          },
+        ],
+      }
+    },
+    { segments: [] as Array<{ key: string; start: number; end: number; length: number }>, totalCutFt: 0 },
+  )
+  const wasteFt = Math.max(line.wasteFt, 0)
+  const wasteStart = Math.max(totalCutFt, 0)
+  const toX = (ft: number) => beamX + (Math.max(0, Math.min(ft, stockLength)) / stockLength) * beamWidth
+  const cutMarkers = segments
+    .map((segment) => segment.end)
+    .filter((position) => position < stockLength - 0.01)
+
+  return (
+    <svg className="h-28 w-full min-w-[300px]" viewBox={`0 0 ${viewWidth} ${viewHeight}`} role="img" aria-label={`Cut diagram for ${line.stockLengthFt} ft stock`}>
+      <text x={beamX} y="14" className="fill-muted-foreground text-[10px]">
+        {`Scale: 0 ft - ${formatCutLength(line.stockLengthFt)} ft`}
+      </text>
+      <line x1={beamX} y1="26" x2={beamX + beamWidth} y2="26" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
+      <line x1={beamX} y1="22" x2={beamX} y2="30" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
+      <line x1={beamX + beamWidth} y1="22" x2={beamX + beamWidth} y2="30" stroke="currentColor" strokeWidth="1" className="text-muted-foreground" />
+      <text x={beamX} y="40" textAnchor="middle" className="fill-muted-foreground text-[9px]">0</text>
+      <text x={beamX + beamWidth} y="40" textAnchor="middle" className="fill-muted-foreground text-[9px]">{formatCutLength(line.stockLengthFt)}</text>
+
+      <rect x={beamX} y={beamY} width={beamWidth} height={beamHeight} rx="3" className="fill-muted stroke-border" strokeWidth="1" />
+      {segments.map((segment, index) => {
+        const x = toX(segment.start)
+        const width = Math.max(toX(segment.end) - x, 1)
+        return (
+          <g key={segment.key}>
+            <rect
+              x={x}
+              y={beamY}
+              width={width}
+              height={beamHeight}
+              className={index % 2 === 0 ? 'fill-emerald-500/35' : 'fill-sky-500/35'}
+            />
+            {width > 42 && (
+              <text x={x + width / 2} y={beamY + 13} textAnchor="middle" className="fill-foreground text-[9px]">
+                {`${formatCutLength(segment.length)} ft`}
+              </text>
+            )}
+          </g>
+        )
+      })}
+      {wasteFt > 0.01 && (
+        <g>
+          <rect
+            x={toX(wasteStart)}
+            y={beamY}
+            width={Math.max(toX(stockLength) - toX(wasteStart), 1)}
+            height={beamHeight}
+            className="fill-muted-foreground/20"
+          />
+          {toX(stockLength) - toX(wasteStart) > 34 && (
+            <text x={(toX(wasteStart) + toX(stockLength)) / 2} y={beamY + 13} textAnchor="middle" className="fill-muted-foreground text-[9px]">
+              {`${formatCutLength(wasteFt)} ft`}
+            </text>
+          )}
+        </g>
+      )}
+      {cutMarkers.map((position, index) => {
+        const x = toX(position)
+        return (
+          <g key={`${position}-${index}`}>
+            <line x1={x} y1={beamY - 8} x2={x} y2={beamY + beamHeight + 22} stroke="currentColor" strokeWidth="1" strokeDasharray="3 3" className="text-destructive" />
+            <text x={x} y={index % 2 === 0 ? 86 : 101} textAnchor="middle" className="fill-destructive text-[9px]">
+              {formatCutLength(position)}
+            </text>
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
 const ADDITIONAL_ITEM_DEFAULT_UNIT_COST: Record<string, number | null> = {
   canopies: 20,
   feet: 15,
@@ -762,9 +862,25 @@ const PergolaCalculator = () => {
   }
 
   const mergeAdditionalPricingRows = (generatedRows: YieldPricingRow[], currentRows: PricingLineRow[]) => {
-    const generated = normalizeGeneratedPricingRows(generatedRows)
-    const generatedItems = new Set(generated.map((row) => normalizeLabel(row.item)).filter(Boolean))
-    const manualRows = currentRows.filter((row) => hasPricingRowValue(row) && !generatedItems.has(normalizeLabel(row.item)))
+    const currentByItem = new Map(
+      currentRows
+        .filter((row) => row.item.trim())
+        .map((row) => [normalizeLabel(row.item), row] as const),
+    )
+    const manualGeneratedItems = new Set(['hardware', 'electrical', 'engineering stamp', 'hours'])
+    const generated = normalizeGeneratedPricingRows(generatedRows).map((row) => {
+      const normalizedItem = normalizeLabel(row.item)
+      const current = currentByItem.get(normalizedItem)
+      if (!current || !manualGeneratedItems.has(normalizedItem)) return row
+
+      return {
+        ...row,
+        quantity: current.quantity.trim() ? current.quantity : row.quantity,
+        unitCost: current.unitCost.trim() ? current.unitCost : row.unitCost,
+      }
+    })
+    const standardItems = new Set(ADDITIONAL_SECTION_ITEMS.map((item) => normalizeLabel(item)))
+    const manualRows = currentRows.filter((row) => hasPricingRowValue(row) && !standardItems.has(normalizeLabel(row.item)))
     return [...generated, ...manualRows]
   }
 
@@ -1542,17 +1658,21 @@ const PergolaCalculator = () => {
                             <Table className="border border-border">
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead className="w-[16%]">Stock</TableHead>
-                                  <TableHead className="w-[18%]">Supply Ft</TableHead>
-                                  <TableHead>Cuts Ft</TableHead>
+                                  <TableHead className="w-[12%]"># of Stocks</TableHead>
+                                  <TableHead className="w-[12%]">Supply Ft</TableHead>
+                                  <TableHead className="w-[24%]">Cuts Ft</TableHead>
+                                  <TableHead>Cut Diagram</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
                                 {section.lines.map((line) => (
-                                  <TableRow key={`${section.title}-${line.stockNumber}`}>
-                                    <TableCell>{line.stockNumber}</TableCell>
+                                  <TableRow key={`${section.title}-${line.stockLengthFt}-${line.cutsFt.join('-')}`}>
+                                    <TableCell>{line.stockCount}</TableCell>
                                     <TableCell>{line.stockLengthFt}</TableCell>
-                                    <TableCell>{`{${line.cutsFt.join(', ')}}`}</TableCell>
+                                    <TableCell>{line.cutsFt.map(formatCutLength).join(', ')}</TableCell>
+                                    <TableCell>
+                                      <CutPlanDiagram line={line} />
+                                    </TableCell>
                                   </TableRow>
                                 ))}
                               </TableBody>

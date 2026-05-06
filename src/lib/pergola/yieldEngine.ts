@@ -25,9 +25,10 @@ export type YieldPieceCounts = {
 }
 
 export type YieldCutPlanLine = {
-  stockNumber: number
+  stockCount: number
   stockLengthFt: number
   cutsFt: number[]
+  wasteFt: number
 }
 
 export type YieldCutPlanSection = {
@@ -319,23 +320,58 @@ const optimizeBeamsSmart = (
 
 const appendTubingRows = (target: YieldPricingRow[], rows: TubeRow[], counts: number[]) => {
   rows.forEach((row, index) => {
+    const quantity = Math.max(Math.trunc(counts[index] ?? 0), 0)
+    if (quantity === 0) return
+    const item = row.label
+    const unitCost = formatNumber(getComputedPerSupply(row.costPerFt, row.supplyFt, row.perSupply))
+    const existing = target.find((entry) => normalize(entry.item) === normalize(item))
+
+    if (existing) {
+      const existingQuantity = parseFiniteNumber(existing.quantity) ?? 0
+      existing.quantity = formatCount(existingQuantity + quantity)
+      if (!existing.unitCost && unitCost) existing.unitCost = unitCost
+      return
+    }
+
     target.push({
-      item: row.label,
-      quantity: formatCount(counts[index] ?? 0),
-      unitCost: formatNumber(getComputedPerSupply(row.costPerFt, row.supplyFt, row.perSupply)),
+      item,
+      quantity: formatCount(quantity),
+      unitCost,
     })
   })
 }
 
 const toCutPlanSection = (title: string, plan: StockBin[] | null): YieldCutPlanSection | null => {
   if (!plan || !plan.length) return null
+  const groupedLines = new Map<string, YieldCutPlanLine>()
+
+  for (const bin of plan) {
+    const stockLengthFt = round2(bin.stockLength)
+    const cutsFt = bin.cuts.map(round2).sort((left, right) => right - left)
+    const wasteFt = round2(stockLengthFt - cutsFt.reduce((sum, cut) => sum + cut, 0))
+    const key = `${stockLengthFt}|${cutsFt.join('|')}`
+    const existing = groupedLines.get(key)
+
+    if (existing) {
+      existing.stockCount += 1
+      continue
+    }
+
+    groupedLines.set(key, {
+      stockCount: 1,
+      stockLengthFt,
+      cutsFt,
+      wasteFt,
+    })
+  }
+
   return {
     title,
-    lines: plan.map((bin, index) => ({
-      stockNumber: index + 1,
-      stockLengthFt: round2(bin.stockLength),
-      cutsFt: bin.cuts.map(round2),
-    })),
+    lines: Array.from(groupedLines.values()).sort((left, right) => {
+      if (right.stockLengthFt !== left.stockLengthFt) return right.stockLengthFt - left.stockLengthFt
+      if (right.stockCount !== left.stockCount) return right.stockCount - left.stockCount
+      return right.cutsFt.length - left.cutsFt.length
+    }),
   }
 }
 
@@ -476,6 +512,17 @@ export const calculatePergolaYield = ({
   const smallPaint = beamPaint.small + Math.trunc(purlinPaint.small / 4)
   const mediumPaint = beamPaint.medium + Math.trunc(purlinPaint.medium / 4)
   const largePaint = beamPaint.large + Math.trunc(purlinPaint.large / 4)
+  const additionalRows: YieldPricingRow[] = [
+    ...(b39 > 0 ? [{ item: 'Canopies', quantity: formatCount(b39), unitCost: '20' }] : []),
+    ...(b37 > 0 ? [{ item: 'Feet', quantity: formatCount(b37), unitCost: '15' }] : []),
+    { item: 'Hardware', quantity: '1', unitCost: '' },
+    ...(smallPaint > 0 ? [{ item: 'Paint (<9.5)', quantity: formatCount(smallPaint), unitCost: '100' }] : []),
+    ...(mediumPaint > 0 ? [{ item: 'Paint (9.5 <x<18)', quantity: formatCount(mediumPaint), unitCost: '200' }] : []),
+    ...(largePaint > 0 ? [{ item: 'Paint (>18)', quantity: formatCount(largePaint), unitCost: '300' }] : []),
+    { item: 'Electrical', quantity: '', unitCost: '100' },
+    { item: 'Engineering Stamp', quantity: '1', unitCost: '' },
+    { item: 'Hours', quantity: '', unitCost: '50' },
+  ]
 
   return {
     pricingSections: {
@@ -496,17 +543,7 @@ export const calculatePergolaYield = ({
         : [emptyPricingRow()],
       angleIron: [emptyPricingRow()],
       flatbar: [emptyPricingRow()],
-      additional: [
-        { item: 'Canopies', quantity: formatCount(b39), unitCost: '20' },
-        { item: 'Feet', quantity: formatCount(b37), unitCost: '15' },
-        { item: 'Hardware', quantity: '', unitCost: '' },
-        { item: 'Paint (<9.5)', quantity: formatCount(smallPaint), unitCost: '100' },
-        { item: 'Paint (9.5 <x<18)', quantity: formatCount(mediumPaint), unitCost: '200' },
-        { item: 'Paint (>18)', quantity: formatCount(largePaint), unitCost: '300' },
-        { item: 'Electrical', quantity: '', unitCost: '100' },
-        { item: 'Engineering Stamp', quantity: '', unitCost: '' },
-        { item: 'Hours', quantity: '', unitCost: '50' },
-      ],
+      additional: additionalRows,
     },
     cutPlans,
     warnings,
