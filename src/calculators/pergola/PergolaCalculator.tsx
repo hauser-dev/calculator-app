@@ -23,7 +23,7 @@ import {
   type PrivacyCoverageGapSource,
   type RoofCoverageGapSource,
 } from '@/lib/pergola/pergolaEngine'
-import { calculatePergolaYield, type YieldCutPlanSection, type YieldPricingRow } from '@/lib/pergola/yieldEngine'
+import { calculatePergolaYield, type PergolaYieldProgress, type PergolaYieldResult, type YieldCutPlanSection, type YieldPricingRow } from '@/lib/pergola/yieldEngine'
 import {
   tubingRows,
   connectorRows,
@@ -165,6 +165,10 @@ type PricingLineRow = {
   quantity: string
   unitCost: string
 }
+type YieldWorkerResponse =
+  | { type: 'progress'; progress: PergolaYieldProgress }
+  | { type: 'result'; result: PergolaYieldResult }
+  | { type: 'error'; message: string }
 
 const parsePieceCountEdit = (raw: string | undefined): number | undefined => {
   if (raw === undefined) return undefined
@@ -276,12 +280,14 @@ const CutPlanDiagram = ({ line, unit }: { line: YieldCutPlanSection['lines'][num
   const beamWidth = 420
   const beamHeight = 18
   const stockLength = Math.max(line.stockLengthFt, 0.01)
-  const { segments, totalCutFt } = line.cutsFt.reduce(
+  const { segments, kerfs, totalConsumedFt } = line.cutsFt.reduce(
     (acc, cut, index) => {
-      const start = acc.totalCutFt
+      const start = acc.totalConsumedFt
       const end = start + cut
+      const hasKerfAfter = index < line.kerfCount
+      const kerfEnd = hasKerfAfter ? end + line.kerfFt : end
       return {
-        totalCutFt: end,
+        totalConsumedFt: kerfEnd,
         segments: [
           ...acc.segments,
           {
@@ -291,12 +297,26 @@ const CutPlanDiagram = ({ line, unit }: { line: YieldCutPlanSection['lines'][num
             length: cut,
           },
         ],
+        kerfs: hasKerfAfter
+          ? [
+              ...acc.kerfs,
+              {
+                key: `${index}-${end}-kerf`,
+                start: end,
+                end: kerfEnd,
+              },
+            ]
+          : acc.kerfs,
       }
     },
-    { segments: [] as Array<{ key: string; start: number; end: number; length: number }>, totalCutFt: 0 },
+    {
+      segments: [] as Array<{ key: string; start: number; end: number; length: number }>,
+      kerfs: [] as Array<{ key: string; start: number; end: number }>,
+      totalConsumedFt: 0,
+    },
   )
   const wasteFt = Math.max(line.wasteFt, 0)
-  const wasteStart = Math.max(totalCutFt, 0)
+  const wasteStart = Math.max(totalConsumedFt, 0)
   const toX = (ft: number) => beamX + (Math.max(0, Math.min(ft, stockLength)) / stockLength) * beamWidth
   const formatFt = (valueFt: number) => formatMeasurementValue(fromFeet(valueFt, unit), unit)
   const cutMarkers = segments
@@ -333,6 +353,20 @@ const CutPlanDiagram = ({ line, unit }: { line: YieldCutPlanSection['lines'][num
               </text>
             )}
           </g>
+        )
+      })}
+      {kerfs.map((kerf) => {
+        const x = toX(kerf.start)
+        const width = Math.max(toX(kerf.end) - x, 1.5)
+        return (
+          <rect
+            key={kerf.key}
+            x={x}
+            y={beamY - 2}
+            width={width}
+            height={beamHeight + 4}
+            className="fill-destructive/45"
+          />
         )
       })}
       {wasteFt > 0.01 && (
@@ -374,7 +408,7 @@ const ADDITIONAL_ITEM_DEFAULT_UNIT_COST: Record<string, number | null> = {
   'paint (9.5 <x<18)': 200,
   'paint (>18)': 300,
   electrical: 100,
-  'engineering stamp': null,
+  'engineering stamp': 1000,
   hours: 50,
 }
 
@@ -411,6 +445,8 @@ const PergolaCalculator = () => {
   const [pricingSections, setPricingSections] = useState<Record<PricingSectionKey, PricingLineRow[]>>(() => createPricingSections())
   const [yieldPlanSections, setYieldPlanSections] = useState<YieldCutPlanSection[]>([])
   const [yieldMessage, setYieldMessage] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [yieldProgress, setYieldProgress] = useState<PergolaYieldProgress | null>(null)
+  const [isYieldRunning, setIsYieldRunning] = useState(false)
   const [bufferInput, setBufferInput] = useState('')
   const [sellMarginInput, setSellMarginInput] = useState('50')
   const [isPrintMode, setIsPrintMode] = useState(false)
@@ -429,6 +465,7 @@ const PergolaCalculator = () => {
   const [flatbarRowsState, setFlatbarRowsState] = useState<FlatbarRow[]>(() => flatbarRows.map((row) => ({ ...row })))
   const [settingsBanner, setSettingsBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const settingsImportInputRef = useRef<HTMLInputElement | null>(null)
+  const yieldWorkerRef = useRef<Worker | null>(null)
   const [settingsSectionState, setSettingsSectionState] = useState<Record<PergolaSettingsSectionKey, boolean>>({
     columnBeamThickness: true,
     tubingSource: true,
@@ -518,6 +555,11 @@ const PergolaCalculator = () => {
       cleanup()
     }
   }, [isPrintMode])
+
+  useEffect(() => () => {
+    yieldWorkerRef.current?.terminate()
+    yieldWorkerRef.current = null
+  }, [])
 
   const columnBeamThickness4x4Options = useMemo(
     () => parseThicknessOptions(columnBeamThickness4x4Input),
@@ -665,6 +707,10 @@ const PergolaCalculator = () => {
     setPricingSections(createPricingSections())
     setYieldPlanSections([])
     setYieldMessage(null)
+    setYieldProgress(null)
+    setIsYieldRunning(false)
+    yieldWorkerRef.current?.terminate()
+    yieldWorkerRef.current = null
     setBufferInput('')
     setSellMarginInput('50')
     setAllResultsSections(true)
@@ -898,6 +944,12 @@ const PergolaCalculator = () => {
       const normalizedItem = normalizeLabel(row.item)
       const current = currentByItem.get(normalizedItem)
       if (!current || !manualGeneratedItems.has(normalizedItem)) return row
+      if (normalizedItem === 'hours') {
+        return {
+          ...row,
+          unitCost: current.unitCost.trim() ? current.unitCost : row.unitCost,
+        }
+      }
 
       return {
         ...row,
@@ -910,26 +962,7 @@ const PergolaCalculator = () => {
     return [...generated, ...manualRows]
   }
 
-  const handleCalculateYield = () => {
-    if (!selectedColumnBeamThickness) {
-      setYieldMessage({ type: 'error', message: 'Column & Beam Thickness is required.' })
-      return
-    }
-
-    const yieldResult = calculatePergolaYield({
-      input: effectiveInput,
-      beamSize: result.beamSize,
-      pieceCounts: effectivePieceCounts,
-      columnBeamThickness: selectedColumnBeamThickness,
-      roofPurlinThickness,
-      privacyPanelPurlinThickness,
-      tubingRows: tubingRowsState,
-      connectorRows: connectorRowsState,
-      endCapRows: endCapRowsState,
-      angleRows: angleRowsState,
-      flatbarRows: flatbarRowsState,
-    })
-
+  const applyYieldResult = (yieldResult: PergolaYieldResult) => {
     setPricingSections((prev) => ({
       ...prev,
       tubing: normalizeGeneratedPricingRows(yieldResult.pricingSections.tubing),
@@ -950,6 +983,81 @@ const PergolaCalculator = () => {
         ? { type: 'error', message: yieldResult.warnings.join(' ') }
         : { type: 'success', message: 'Yield calculated.' },
     )
+  }
+
+  const handleCalculateYield = () => {
+    if (!selectedColumnBeamThickness) {
+      setYieldMessage({ type: 'error', message: 'Column & Beam Thickness is required.' })
+      return
+    }
+
+    if (isYieldRunning) return
+
+    const payload = {
+      input: effectiveInput,
+      beamSize: result.beamSize,
+      pieceCounts: effectivePieceCounts,
+      columnBeamThickness: selectedColumnBeamThickness,
+      roofPurlinThickness,
+      privacyPanelPurlinThickness,
+      tubingRows: tubingRowsState,
+      connectorRows: connectorRowsState,
+      endCapRows: endCapRowsState,
+      angleRows: angleRowsState,
+      flatbarRows: flatbarRowsState,
+    }
+
+    yieldWorkerRef.current?.terminate()
+    setYieldMessage(null)
+    setYieldProgress({ percent: 0, label: 'Preparing yield calculation...' })
+    setIsYieldRunning(true)
+
+    if (typeof Worker === 'undefined') {
+      const yieldResult = calculatePergolaYield({
+        ...payload,
+        onProgress: (progress) => setYieldProgress(progress),
+      })
+      applyYieldResult(yieldResult)
+      setYieldProgress({ percent: 100, label: 'Yield calculated.' })
+      setIsYieldRunning(false)
+      return
+    }
+
+    const worker = new Worker(new URL('../../lib/pergola/yieldWorker.ts', import.meta.url), { type: 'module' })
+    yieldWorkerRef.current = worker
+
+    worker.onmessage = (event: MessageEvent<YieldWorkerResponse>) => {
+      const message = event.data
+      if (message.type === 'progress') {
+        setYieldProgress(message.progress)
+        return
+      }
+
+      if (message.type === 'result') {
+        applyYieldResult(message.result)
+        setYieldProgress({ percent: 100, label: 'Yield calculated.' })
+        setIsYieldRunning(false)
+        worker.terminate()
+        if (yieldWorkerRef.current === worker) yieldWorkerRef.current = null
+        return
+      }
+
+      setYieldMessage({ type: 'error', message: message.message })
+      setYieldProgress(null)
+      setIsYieldRunning(false)
+      worker.terminate()
+      if (yieldWorkerRef.current === worker) yieldWorkerRef.current = null
+    }
+
+    worker.onerror = () => {
+      setYieldMessage({ type: 'error', message: 'Unable to calculate yield.' })
+      setYieldProgress(null)
+      setIsYieldRunning(false)
+      worker.terminate()
+      if (yieldWorkerRef.current === worker) yieldWorkerRef.current = null
+    }
+
+    worker.postMessage(payload)
   }
   const handleExportSettingsCsv = () => {
     const rows: string[][] = [
@@ -1554,6 +1662,7 @@ const PergolaCalculator = () => {
                             onValueChange={(value) => {
                               setColumnBeamThickness(value)
                               setYieldMessage(null)
+                              setYieldProgress(null)
                             }}
                           >
                             <SelectTrigger
@@ -1573,9 +1682,24 @@ const PergolaCalculator = () => {
                             <p className="text-xs text-destructive">Column & Beam Thickness is required.</p>
                           )}
                           {selectedColumnBeamThickness && (
-                            <Button type="button" size="sm" onClick={handleCalculateYield}>
-                              Calculate Yield
-                            </Button>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Button type="button" size="sm" onClick={handleCalculateYield} disabled={isYieldRunning}>
+                                {isYieldRunning ? 'Calculating...' : 'Calculate Yield'}
+                              </Button>
+                              {yieldProgress && (
+                                <div className="min-w-[180px] flex-1 space-y-1">
+                                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                                    <div
+                                      className="h-full rounded-full bg-emerald-500 transition-all duration-300"
+                                      style={{ width: `${Math.max(0, Math.min(yieldProgress.percent, 100))}%` }}
+                                    />
+                                  </div>
+                                  <p className="text-xs text-muted-foreground">
+                                    {`${Math.max(0, Math.min(yieldProgress.percent, 100))}% - ${yieldProgress.label}`}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
                           )}
                           {yieldMessage && (
                             <p className={cn('text-xs', yieldMessage.type === 'success' ? 'text-emerald-600' : 'text-destructive')}>

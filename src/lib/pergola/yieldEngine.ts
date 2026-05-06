@@ -29,11 +29,18 @@ export type YieldCutPlanLine = {
   stockLengthFt: number
   cutsFt: number[]
   wasteFt: number
+  kerfCount: number
+  kerfFt: number
 }
 
 export type YieldCutPlanSection = {
   title: string
   lines: YieldCutPlanLine[]
+}
+
+export type PergolaYieldProgress = {
+  percent: number
+  label: string
 }
 
 export type CalculatePergolaYieldOptions = {
@@ -48,6 +55,7 @@ export type CalculatePergolaYieldOptions = {
   endCapRows: EndCapRow[]
   angleRows: AngleRow[]
   flatbarRows: FlatbarRow[]
+  onProgress?: (progress: PergolaYieldProgress) => void
 }
 
 export type PergolaYieldResult = {
@@ -68,6 +76,8 @@ type OptimizeResult = {
 }
 
 const WASTE_INF = 1e30
+const KERF_LOSS_FT = (1 / 8) / 12
+const LENGTH_EPSILON = 1e-9
 
 const emptyPricingRow = (): YieldPricingRow => ({
   item: '',
@@ -178,17 +188,22 @@ const packRecursiveWithPlan = (
   let triedValue = -1
 
   for (const bin of bins) {
-    if (bin.remaining < pieceLength) continue
+    const isExactRemaining = Math.abs(bin.remaining - pieceLength) <= LENGTH_EPSILON
+    const consumedLength = isExactRemaining ? pieceLength : pieceLength + KERF_LOSS_FT
+    if (bin.remaining + LENGTH_EPSILON < consumedLength) continue
     if (triedValue >= 0 && Math.abs(bin.remaining - triedValue) < 0.0000001) continue
 
     triedValue = bin.remaining
-    bin.remaining -= pieceLength
+    const previousRemaining = bin.remaining
+    bin.remaining = Math.abs(previousRemaining - consumedLength) <= LENGTH_EPSILON
+      ? 0
+      : previousRemaining - consumedLength
     bin.cuts.push(pieceLength)
 
     packRecursiveWithPlan(pieces, pieceIndex + 1, bins, memo, best)
 
     bin.cuts.pop()
-    bin.remaining += pieceLength
+    bin.remaining = previousRemaining
 
     if (best.waste === 0) break
   }
@@ -348,8 +363,10 @@ const toCutPlanSection = (title: string, plan: StockBin[] | null): YieldCutPlanS
   for (const bin of plan) {
     const stockLengthFt = round2(bin.stockLength)
     const cutsFt = bin.cuts.map(round2).sort((left, right) => right - left)
-    const wasteFt = round2(stockLengthFt - cutsFt.reduce((sum, cut) => sum + cut, 0))
-    const key = `${stockLengthFt}|${cutsFt.join('|')}`
+    const wasteFt = round2(Math.max(bin.remaining, 0))
+    const usedKerfFt = Math.max(bin.stockLength - bin.cuts.reduce((sum, cut) => sum + cut, 0) - Math.max(bin.remaining, 0), 0)
+    const kerfCount = Math.round(usedKerfFt / KERF_LOSS_FT)
+    const key = `${stockLengthFt}|${cutsFt.join('|')}|${kerfCount}|${wasteFt}`
     const existing = groupedLines.get(key)
 
     if (existing) {
@@ -362,6 +379,8 @@ const toCutPlanSection = (title: string, plan: StockBin[] | null): YieldCutPlanS
       stockLengthFt,
       cutsFt,
       wasteFt,
+      kerfCount,
+      kerfFt: KERF_LOSS_FT,
     })
   }
 
@@ -390,6 +409,13 @@ const countPaintPieces = (pieces: number[]) => {
   return counts
 }
 
+const calculateHoursQuantity = (dimensions: PergolaInput['dimensions']) => {
+  const values = [dimensions.lengthFt, dimensions.depthFt, dimensions.heightFt]
+  if (values.some((value) => value >= 18)) return 80
+  if (values.some((value) => value >= 9.5)) return 50
+  return 30
+}
+
 export const calculatePergolaYield = ({
   input,
   beamSize,
@@ -400,7 +426,9 @@ export const calculatePergolaYield = ({
   tubingRows,
   connectorRows,
   endCapRows,
+  onProgress,
 }: CalculatePergolaYieldOptions): PergolaYieldResult => {
+  const reportProgress = (percent: number, label: string) => onProgress?.({ percent, label })
   const warnings: string[] = []
   const tubing: YieldPricingRow[] = []
   const cutPlans: YieldCutPlanSection[] = []
@@ -422,12 +450,18 @@ export const calculatePergolaYield = ({
   const bDim = beamDimensionFt(beamSize)
 
   const processSidePurlins = () => {
-    if (b34 === 0 && b35 === 0) return
+    if (b34 === 0 && b35 === 0) {
+      reportProgress(100, 'Privacy panel purlins skipped.')
+      return
+    }
+
+    reportProgress(70, 'Calculating privacy panel purlin plan...')
 
     const sideSize = input.privacy.customSize.trim() || input.privacy.size
     const sideRows = matchingTubeRows(tubingRows, sideSize, privacyThick)
     if (!sideRows.length) {
       warnings.push(`No privacy panel purlin tubing matched ${sideSize} at ${privacyPanelPurlinThickness}.`)
+      reportProgress(100, 'Privacy panel purlins skipped.')
       return
     }
 
@@ -454,13 +488,16 @@ export const calculatePergolaYield = ({
     const section = toCutPlanSection('Privacy Panel Plan', result.plan)
     if (section) cutPlans.push(section)
     purlinPieces.push(...collectCuts(result.plan))
+    reportProgress(100, 'Privacy panel purlin plan complete.')
   }
 
   const processRoofPurlins = () => {
+    reportProgress(40, 'Calculating roof purlin plan...')
     const roofSize = input.roof.customSize.trim() || input.roof.size
     const roofRows = matchingTubeRows(tubingRows, roofSize, roofThick)
     if (!roofRows.length) {
       warnings.push(`No roof purlin tubing matched ${roofSize} at ${roofPurlinThickness}.`)
+      reportProgress(100, 'Roof purlins skipped.')
       return
     }
 
@@ -477,17 +514,23 @@ export const calculatePergolaYield = ({
     const section = toCutPlanSection('Roof Purlin Plan', result.plan)
     if (section) cutPlans.push(section)
     purlinPieces.push(...collectCuts(result.plan))
+    reportProgress(70, 'Roof purlin plan complete.')
 
     processSidePurlins()
   }
 
+  reportProgress(5, 'Starting yield calculation...')
+
   if (beamThick == null) {
     warnings.push('Column & Beam Thickness is required before calculating yield.')
+    reportProgress(100, 'Yield calculation stopped.')
   } else {
     const beamRows = matchingTubeRows(tubingRows, beamSize, beamThick)
     if (!beamRows.length) {
       warnings.push(`No column/beam tubing matched ${beamSize} at ${columnBeamThickness}.`)
+      reportProgress(100, 'Columns and beams skipped.')
     } else {
+      reportProgress(10, 'Calculating columns and beams plan...')
       const halfB30 = Math.trunc(b30 / 2)
       const lengthReq = halfB30 > 1 ? (input.dimensions.lengthFt - halfB30 * bDim) / (halfB30 - 1) : 0
       const depthReq = input.dimensions.depthFt - 2 * bDim
@@ -498,6 +541,7 @@ export const calculatePergolaYield = ({
       const section = toCutPlanSection('Columns & Beams Plan', result.plan)
       if (section) cutPlans.push(section)
       beamPieces.push(...collectCuts(result.plan))
+      reportProgress(40, 'Columns and beams plan complete.')
       processRoofPurlins()
     }
   }
@@ -512,6 +556,7 @@ export const calculatePergolaYield = ({
   const smallPaint = beamPaint.small + Math.trunc(purlinPaint.small / 4)
   const mediumPaint = beamPaint.medium + Math.trunc(purlinPaint.medium / 4)
   const largePaint = beamPaint.large + Math.trunc(purlinPaint.large / 4)
+  const hoursQuantity = calculateHoursQuantity(input.dimensions)
   const additionalRows: YieldPricingRow[] = [
     ...(b39 > 0 ? [{ item: 'Canopies', quantity: formatCount(b39), unitCost: '20' }] : []),
     ...(b37 > 0 ? [{ item: 'Feet', quantity: formatCount(b37), unitCost: '15' }] : []),
@@ -520,8 +565,8 @@ export const calculatePergolaYield = ({
     ...(mediumPaint > 0 ? [{ item: 'Paint (9.5 <x<18)', quantity: formatCount(mediumPaint), unitCost: '200' }] : []),
     ...(largePaint > 0 ? [{ item: 'Paint (>18)', quantity: formatCount(largePaint), unitCost: '300' }] : []),
     { item: 'Electrical', quantity: '', unitCost: '100' },
-    { item: 'Engineering Stamp', quantity: '1', unitCost: '' },
-    { item: 'Hours', quantity: '', unitCost: '50' },
+    { item: 'Engineering Stamp', quantity: '1', unitCost: '1000' },
+    { item: 'Hours', quantity: formatCount(hoursQuantity), unitCost: '50' },
   ]
 
   return {
