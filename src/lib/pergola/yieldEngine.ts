@@ -75,6 +75,19 @@ type OptimizeResult = {
   plan: StockBin[] | null
 }
 
+type LengthGroup = {
+  length: number
+  count: number
+}
+
+type CutPattern = {
+  stockIndex: number
+  stockLength: number
+  counts: number[]
+  cuts: number[]
+  remaining: number
+}
+
 const WASTE_INF = 1e30
 const KERF_LOSS_FT = (1 / 8) / 12
 const LENGTH_EPSILON = 1e-9
@@ -254,6 +267,20 @@ const consumedLengthForRepeatedCut = (stockLength: number, pieceLength: number, 
   return pieceLength * pieceCount + KERF_LOSS_FT * pieceCount
 }
 
+const consumedLengthForPattern = (stockLength: number, lengths: number[], counts: number[]) => {
+  const cutCount = counts.reduce((sum, count) => sum + count, 0)
+  if (cutCount <= 0) return null
+
+  const pieceLengthTotal = counts.reduce((sum, count, index) => sum + count * lengths[index], 0)
+  const exactFitConsumed = pieceLengthTotal + KERF_LOSS_FT * Math.max(cutCount - 1, 0)
+  if (Math.abs(stockLength - exactFitConsumed) <= LENGTH_EPSILON) {
+    return exactFitConsumed
+  }
+
+  const consumed = pieceLengthTotal + KERF_LOSS_FT * cutCount
+  return consumed <= stockLength + LENGTH_EPSILON ? consumed : null
+}
+
 const optimizeSingleLengthPieces = (pieceLength: number, pieceCount: number, avail: number[]): OptimizeResult => {
   const counts = avail.map(() => 0)
   if (pieceLength <= 0 || pieceCount <= 0) return { counts, plan: null }
@@ -319,6 +346,137 @@ const optimizeSingleLengthPieces = (pieceLength: number, pieceCount: number, ava
   return { counts, plan }
 }
 
+const createCutPattern = (stockIndex: number, stockLength: number, lengths: number[], patternCounts: number[]): CutPattern | null => {
+  const consumed = consumedLengthForPattern(stockLength, lengths, patternCounts)
+  if (consumed == null) return null
+
+  return {
+    stockIndex,
+    stockLength,
+    counts: [...patternCounts],
+    cuts: patternCounts.flatMap((count, index) => Array.from({ length: count }, () => lengths[index])),
+    remaining: Math.max(stockLength - consumed, 0),
+  }
+}
+
+const createCutPatterns = (groups: LengthGroup[], avail: number[]): CutPattern[] => {
+  const lengths = groups.map((group) => group.length)
+  const maxNeeded = groups.map((group) => group.count)
+  const patterns: CutPattern[] = []
+
+  avail.forEach((stockLength, stockIndex) => {
+    const current = new Array(groups.length).fill(0)
+
+    const visit = (index: number, pieceLengthTotal: number, cutCount: number) => {
+      if (index >= groups.length) {
+        const pattern = createCutPattern(stockIndex, stockLength, lengths, current)
+        if (pattern) patterns.push(pattern)
+        return
+      }
+
+      const length = lengths[index]
+      for (let count = 0; count <= maxNeeded[index]; count += 1) {
+        const nextPieceLengthTotal = pieceLengthTotal + count * length
+        const nextCutCount = cutCount + count
+        const bestCaseConsumed = nextPieceLengthTotal + KERF_LOSS_FT * Math.max(nextCutCount - 1, 0)
+        if (bestCaseConsumed > stockLength + LENGTH_EPSILON) break
+
+        current[index] = count
+        visit(index + 1, nextPieceLengthTotal, nextCutCount)
+      }
+      current[index] = 0
+    }
+
+    visit(0, 0, 0)
+  })
+
+  return patterns.sort((left, right) => {
+    if (left.remaining !== right.remaining) return left.remaining - right.remaining
+    if (right.cuts.length !== left.cuts.length) return right.cuts.length - left.cuts.length
+    return left.stockIndex - right.stockIndex
+  })
+}
+
+const optimizeGroupedLengthPieces = (groups: LengthGroup[], avail: number[]): OptimizeResult => {
+  const counts = avail.map(() => 0)
+  if (!groups.length) return { counts, plan: null }
+  if (groups.length === 1) return optimizeSingleLengthPieces(groups[0].length, groups[0].count, avail)
+
+  const patterns = createCutPatterns(groups, avail)
+  if (!patterns.length) return { counts, plan: null }
+
+  type GroupedDpState = {
+    waste: number
+    beams: number
+    previousKey: string | null
+    pattern: CutPattern | null
+  }
+
+  const targetCounts = groups.map((group) => group.count)
+  const keyFromCounts = (values: number[]) => values.join('|')
+  const startKey = keyFromCounts(targetCounts.map(() => 0))
+  const targetKey = keyFromCounts(targetCounts)
+  const states = new Map<string, GroupedDpState>([
+    [startKey, { waste: 0, beams: 0, previousKey: null, pattern: null }],
+  ])
+
+  const visitCounts = (index: number, current: number[]) => {
+    if (index >= targetCounts.length) {
+      const key = keyFromCounts(current)
+      const state = states.get(key)
+      if (!state) return
+
+      for (const pattern of patterns) {
+        const nextCounts = current.map((value, countIndex) => value + pattern.counts[countIndex])
+        if (nextCounts.some((value, countIndex) => value > targetCounts[countIndex])) continue
+
+        const nextKey = keyFromCounts(nextCounts)
+        const candidate = {
+          waste: state.waste + pattern.remaining,
+          beams: state.beams + 1,
+          previousKey: key,
+          pattern,
+        }
+        const existing = states.get(nextKey)
+        if (
+          !existing ||
+          candidate.waste < existing.waste ||
+          (Math.abs(candidate.waste - existing.waste) < 0.0000001 && candidate.beams < existing.beams)
+        ) {
+          states.set(nextKey, candidate)
+        }
+      }
+      return
+    }
+
+    for (let count = 0; count <= targetCounts[index]; count += 1) {
+      current[index] = count
+      visitCounts(index + 1, current)
+    }
+    current[index] = 0
+  }
+
+  visitCounts(0, targetCounts.map(() => 0))
+
+  const best = states.get(targetKey)
+  if (!best) return { counts, plan: null }
+
+  const plan: StockBin[] = []
+  let cursor: GroupedDpState | undefined = best
+  while (cursor?.pattern) {
+    const pattern = cursor.pattern
+    counts[pattern.stockIndex] += 1
+    plan.push({
+      stockLength: pattern.stockLength,
+      remaining: pattern.remaining,
+      cuts: [...pattern.cuts],
+    })
+    cursor = cursor.previousKey ? states.get(cursor.previousKey) : undefined
+  }
+
+  return { counts, plan: plan.reverse() }
+}
+
 const optimizeBeamsSmart = (
   lengthReq: number,
   depthReq: number,
@@ -329,10 +487,34 @@ const optimizeBeamsSmart = (
   avail: number[],
 ): OptimizeResult => {
   const counts = avail.map(() => 0)
-  const totalPieces = numLength + numDepth + numHeight
+  const lengthInputs = [
+    { length: lengthReq, count: numLength },
+    { length: depthReq, count: numDepth },
+    { length: heightReq, count: numHeight },
+  ]
+  const groupedLengths = new Map<string, LengthGroup>()
+
+  lengthInputs.forEach(({ length, count }) => {
+    const cleanCount = Math.max(Math.trunc(count), 0)
+    if (!Number.isFinite(length) || length <= 0 || cleanCount <= 0) return
+    const key = length.toFixed(6)
+    const existing = groupedLengths.get(key)
+    if (existing) {
+      existing.count += cleanCount
+    } else {
+      groupedLengths.set(key, { length: Number(key), count: cleanCount })
+    }
+  })
+
+  const groups = Array.from(groupedLengths.values()).sort((left, right) => right.length - left.length)
+  const totalPieces = groups.reduce((sum, group) => sum + group.count, 0)
 
   if (!avail.length || totalPieces === 0) {
     return { counts, plan: null }
+  }
+
+  if (groups.length <= 3) {
+    return optimizeGroupedLengthPieces(groups, avail)
   }
 
   const pieces: number[] = []
@@ -340,14 +522,8 @@ const optimizeBeamsSmart = (
     for (let i = 0; i < count; i += 1) pieces.push(length)
   }
 
-  addPieces(lengthReq, numLength)
-  addPieces(depthReq, numDepth)
-  addPieces(heightReq, numHeight)
+  groups.forEach((group) => addPieces(group.length, group.count))
   pieces.sort((left, right) => right - left)
-  const positiveLengths = Array.from(new Set(pieces.filter((piece) => piece > 0).map((piece) => piece.toFixed(6))))
-  if (positiveLengths.length === 1 && pieces.every((piece) => piece > 0)) {
-    return optimizeSingleLengthPieces(Number(positiveLengths[0]), totalPieces, avail)
-  }
 
   const totalPieceLength = pieces.reduce((sum, piece) => sum + piece, 0)
   const largestPiece = pieces[0] ?? 0

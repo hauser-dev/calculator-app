@@ -1,5 +1,5 @@
 import { beamThicknessBySize, connectorRows, endCapRows, settingsSizes, tubingRows } from './pergolaData.ts'
-import { DEFAULT_GRAND_THRESHOLD_FT, DEFAULT_PIECES_IN_GROUP, FT_TO_IN, MEDIUM_PIECE_MAX, SMALL_PIECE_MAX } from './quoteConstants.ts'
+import { DEFAULT_PIECES_IN_GROUP, FT_TO_IN, MEDIUM_PIECE_MAX, SMALL_PIECE_MAX } from './quoteConstants.ts'
 import { parseDimension } from './quoteParser.ts'
 import { round2, safeToNumber, toFeetFromInches, toInchesFromFeet } from './quoteUtils.ts'
 import type {
@@ -15,7 +15,6 @@ import type {
   RoofOrientation,
 } from './quoteSchema.ts'
 
-const THRESHOLD = DEFAULT_GRAND_THRESHOLD_FT
 const PIECE_GROUP = DEFAULT_PIECES_IN_GROUP
 
 const clone = <T>(value: T): T => structuredClone(value)
@@ -285,12 +284,10 @@ const applyNoPrivacy = (state: QuoteEngineState) => {
   return next
 }
 
-const applySuggestedType = (state: QuoteEngineState) => {
+const applySelectedType = (state: QuoteEngineState) => {
   const next = clone(state)
-  const dims = next.pergola.dimensions
-  const biggest = Math.max(dims.length.ft, dims.depth.ft, dims.height.ft)
-  next.suggestedType = biggest >= THRESHOLD ? 'Grand Pergola' : 'Pergola'
-  next.beam.size = next.suggestedType === 'Grand Pergola' ? '6x6' : '4x4'
+  next.suggestedType = next.pergola.type
+  next.beam.size = next.pergola.type === 'Grand Pergola' ? '6x6' : '4x4'
   return next
 }
 
@@ -814,7 +811,7 @@ const applyFieldChange = (state: QuoteEngineState, field: QuoteFieldChange, valu
 
 const runPipeline = (state: QuoteEngineState) => {
   // Canonical update pipeline so every field change recomputes consistently.
-  let next = applySuggestedType(state)
+  let next = applySelectedType(state)
   next = applyCustomSizeOverride(next)
   next = applyAvailability(next)
   next = computeCoverageGapRoof(next)
@@ -1001,7 +998,6 @@ export const createInitialQuoteState = (): QuoteEngineState => {
 }
 
 export const applySyncFeetInchesOnly = syncFeetInches
-
 
 
 

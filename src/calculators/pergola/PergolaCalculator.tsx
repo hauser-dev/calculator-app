@@ -628,9 +628,37 @@ const buildPergolaPreviewModel = (
   const sideOutFt = (input.privacy.orientation === 'Horizontal' ? sideSize.min : sideSize.max) / IN_PER_FT
   const sideBottom = Math.max(input.privacy.groundClearanceIn / IN_PER_FT, 0)
   const sideTop = Math.max(sideBottom + sideFaceFt, heightFt - input.privacy.topClearanceIn / IN_PER_FT - beamFt)
-  const sideHeight = Math.max(sideTop - sideBottom, sideFaceFt)
+  const verticalSideBottom = input.privacy.alignment === 'Parallel to height'
+    ? Math.min(sideBottom + beamFt, Math.max(sideBottom, sideTop - sideFaceFt))
+    : sideBottom
+  const verticalSideTop = Math.max(verticalSideBottom + sideFaceFt, sideTop)
+  const verticalSideHeight = Math.max(verticalSideTop - verticalSideBottom, sideFaceFt)
   const lengthSideIndexes = selectedPreviewSideIndexes(Math.max(0, Math.min(2, Math.round(input.privacy.panelCountLength))))
   const depthSideIndexes = selectedPreviewSideIndexes(Math.max(0, Math.min(2, Math.round(input.privacy.panelCountDepth))))
+  const bottomSupportY = sideBottom + beamFt / 2
+
+  const addBottomLengthSideSupports = () => {
+    lengthSideIndexes.forEach((sideIndex) => {
+      const z = sideIndex === 0 ? 0 : depthFt
+      for (const [start, end] of lengthSideSegmentsBySide[sideIndex] ?? []) {
+        addBox({ x: (start + end) / 2, y: bottomSupportY, z }, { x: Math.max(end - start, beamFt), y: beamFt, z: beamFt }, beamColor)
+      }
+    })
+  }
+
+  const addBottomDepthSideSupports = () => {
+    depthSideIndexes.forEach((sideIndex) => {
+      const x = sideIndex === 0 ? 0 : lengthFt
+      for (const [start, end] of depthSideSegmentsBySide[sideIndex] ?? []) {
+        addBox({ x, y: bottomSupportY, z: (start + end) / 2 }, { x: beamFt, y: beamFt, z: Math.max(end - start, beamFt) }, beamColor)
+      }
+    })
+  }
+
+  if (privacyPanelsEnabled && input.privacy.alignment === 'Parallel to height') {
+    addBottomLengthSideSupports()
+    addBottomDepthSideSupports()
+  }
 
   const addHorizontalLengthSidePurlins = (count: number) => {
     const buckets = lengthSideIndexes.flatMap((sideIndex) =>
@@ -654,7 +682,7 @@ const buildPergolaPreviewModel = (
       const z = sideIndex === 0 ? 0 : depthFt
       const xPositions = distributePreviewCentersAcrossSegments([segment], allocations[bucketIndex] ?? 0, sideFaceFt)
       for (const x of xPositions) {
-        addBox({ x, y: sideBottom + sideHeight / 2, z }, { x: sideFaceFt, y: sideHeight, z: sideOutFt }, privacyColor, '#64748b')
+        addBox({ x, y: verticalSideBottom + verticalSideHeight / 2, z }, { x: sideFaceFt, y: verticalSideHeight, z: sideOutFt }, privacyColor, '#64748b')
       }
     })
   }
@@ -680,7 +708,7 @@ const buildPergolaPreviewModel = (
       const x = sideIndex === 0 ? 0 : lengthFt
       const zPositions = distributePreviewCentersAcrossSegments([segment], allocations[bucketIndex] ?? 0, sideFaceFt)
       for (const z of zPositions) {
-        addBox({ x, y: sideBottom + sideHeight / 2, z }, { x: sideOutFt, y: sideHeight, z: sideFaceFt }, privacyColor, '#64748b')
+        addBox({ x, y: verticalSideBottom + verticalSideHeight / 2, z }, { x: sideOutFt, y: verticalSideHeight, z: sideFaceFt }, privacyColor, '#64748b')
       }
     })
   }
@@ -2198,7 +2226,7 @@ const PergolaCalculator = () => {
                     {isOverviewOpen && <CardContent className="space-y-4">
                       <div className="results-grid-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                         <div className="result-metric result-metric-neutral rounded-xl p-2.5">
-                          <p className="text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">Suggested type</p>
+                          <p className="text-[0.65rem] uppercase tracking-[0.25em] text-muted-foreground">Selected type</p>
                           <p className="text-sm text-foreground">{result.suggestedType}</p>
                         </div>
                         <div className="result-metric result-metric-neutral rounded-xl p-2.5">
