@@ -212,9 +212,17 @@ const packRecursiveWithPlan = (
 const testScenario = (pieces: number[], avail: number[], candidateCounts: number[]) => {
   const counts = avail.map((_, index) => Math.max(Math.trunc(candidateCounts[index] ?? 0), 0))
   const totalStock = counts.reduce((sum, count) => sum + count, 0)
+  const totalStockLength = counts.reduce((sum, count, index) => sum + count * avail[index], 0)
+  const totalPieceLength = pieces.reduce((sum, piece) => sum + piece, 0)
+  const largestPiece = pieces[0] ?? 0
+  const largestSelectedStock = counts.reduce((largest, count, index) => (count > 0 ? Math.max(largest, avail[index]) : largest), 0)
 
   if (totalStock === 0) {
     return { waste: WASTE_INF, beams: 0, counts, plan: [] as StockBin[] }
+  }
+
+  if (totalStock > pieces.length || totalStockLength + LENGTH_EPSILON < totalPieceLength || largestSelectedStock + LENGTH_EPSILON < largestPiece) {
+    return { waste: WASTE_INF, beams: totalStock, counts, plan: [] as StockBin[] }
   }
 
   const bins: StockBin[] = []
@@ -238,6 +246,77 @@ const testScenario = (pieces: number[], avail: number[], candidateCounts: number
     counts,
     plan: best.plan,
   }
+}
+
+const consumedLengthForRepeatedCut = (stockLength: number, pieceLength: number, pieceCount: number) => {
+  const exactFitConsumed = pieceLength * pieceCount + KERF_LOSS_FT * Math.max(pieceCount - 1, 0)
+  if (Math.abs(stockLength - exactFitConsumed) <= LENGTH_EPSILON) return exactFitConsumed
+  return pieceLength * pieceCount + KERF_LOSS_FT * pieceCount
+}
+
+const optimizeSingleLengthPieces = (pieceLength: number, pieceCount: number, avail: number[]): OptimizeResult => {
+  const counts = avail.map(() => 0)
+  if (pieceLength <= 0 || pieceCount <= 0) return { counts, plan: null }
+
+  const patterns: Array<{ stockIndex: number; stockLength: number; cuts: number[]; remaining: number; waste: number }> = []
+  avail.forEach((stockLength, stockIndex) => {
+    for (let cuts = 1; cuts <= pieceCount; cuts += 1) {
+      const consumed = consumedLengthForRepeatedCut(stockLength, pieceLength, cuts)
+      if (consumed > stockLength + LENGTH_EPSILON) continue
+      const remaining = Math.max(stockLength - consumed, 0)
+      patterns.push({
+        stockIndex,
+        stockLength,
+        cuts: Array.from({ length: cuts }, () => pieceLength),
+        remaining,
+        waste: remaining,
+      })
+    }
+  })
+
+  if (!patterns.length) return { counts, plan: null }
+
+  type SingleLengthDpState = { waste: number; beams: number; plan: typeof patterns }
+  const dp: Array<SingleLengthDpState | null> = new Array(pieceCount + 1).fill(null)
+  dp[0] = { waste: 0, beams: 0, plan: [] }
+
+  for (let placed = 0; placed <= pieceCount; placed += 1) {
+    const current = dp[placed]
+    if (!current) continue
+
+    for (const pattern of patterns) {
+      const nextPlaced = placed + pattern.cuts.length
+      if (nextPlaced > pieceCount) continue
+
+      const candidate: SingleLengthDpState = {
+        waste: current.waste + pattern.waste,
+        beams: current.beams + 1,
+        plan: [...current.plan, pattern],
+      }
+      const existing = dp[nextPlaced]
+      if (
+        !existing ||
+        candidate.waste < existing.waste ||
+        (Math.abs(candidate.waste - existing.waste) < 0.0000001 && candidate.beams < existing.beams)
+      ) {
+        dp[nextPlaced] = candidate
+      }
+    }
+  }
+
+  const best = dp[pieceCount]
+  if (!best) return { counts, plan: null }
+
+  const plan = best.plan.map((pattern) => {
+    counts[pattern.stockIndex] += 1
+    return {
+      stockLength: pattern.stockLength,
+      remaining: pattern.remaining,
+      cuts: [...pattern.cuts],
+    }
+  })
+
+  return { counts, plan }
 }
 
 const optimizeBeamsSmart = (
@@ -265,6 +344,13 @@ const optimizeBeamsSmart = (
   addPieces(depthReq, numDepth)
   addPieces(heightReq, numHeight)
   pieces.sort((left, right) => right - left)
+  const positiveLengths = Array.from(new Set(pieces.filter((piece) => piece > 0).map((piece) => piece.toFixed(6))))
+  if (positiveLengths.length === 1 && pieces.every((piece) => piece > 0)) {
+    return optimizeSingleLengthPieces(Number(positiveLengths[0]), totalPieces, avail)
+  }
+
+  const totalPieceLength = pieces.reduce((sum, piece) => sum + piece, 0)
+  const largestPiece = pieces[0] ?? 0
 
   let bestWaste = WASTE_INF
   let bestBeams = 999999
@@ -272,7 +358,22 @@ const optimizeBeamsSmart = (
   let bestPlan: StockBin[] | null = null
 
   const test = (candidateCounts: number[]) => {
-    const result = testScenario(pieces, avail, candidateCounts)
+    const sanitizedCounts = avail.map((_, index) => Math.max(Math.trunc(candidateCounts[index] ?? 0), 0))
+    const totalStock = sanitizedCounts.reduce((sum, count) => sum + count, 0)
+    if (totalStock === 0 || totalStock > totalPieces) return
+
+    const totalStockLength = sanitizedCounts.reduce((sum, count, index) => sum + count * avail[index], 0)
+    if (totalStockLength + LENGTH_EPSILON < totalPieceLength) return
+
+    const largestSelectedStock = sanitizedCounts.reduce((largest, count, index) => (count > 0 ? Math.max(largest, avail[index]) : largest), 0)
+    if (largestSelectedStock + LENGTH_EPSILON < largestPiece) return
+
+    if (bestWaste < WASTE_INF) {
+      const optimisticWaste = totalStockLength - totalPieceLength - totalPieces * KERF_LOSS_FT
+      if (optimisticWaste > bestWaste + LENGTH_EPSILON) return
+    }
+
+    const result = testScenario(pieces, avail, sanitizedCounts)
     if (result.waste >= 1e29) return
     if (result.waste < bestWaste || (Math.abs(result.waste - bestWaste) < 0.0000001 && result.beams < bestBeams)) {
       bestWaste = result.waste
@@ -282,10 +383,8 @@ const optimizeBeamsSmart = (
     }
   }
 
-  const maxIter = Math.max(totalPieces * 2, 1)
-
   if (avail.length === 1) {
-    for (let a = 0; a <= maxIter; a += 1) {
+    for (let a = 0; a <= totalPieces; a += 1) {
       test([a])
       if (bestWaste === 0) break
     }
@@ -303,9 +402,10 @@ const optimizeBeamsSmart = (
     }
   } else if (avail.length === 3) {
     let done = false
-    for (let a = 0; a <= maxIter && !done; a += 1) {
-      for (let b = 0; b <= maxIter && !done; b += 1) {
-        for (let c = 0; c <= maxIter; c += 1) {
+    for (let a = 0; a <= totalPieces && !done; a += 1) {
+      for (let b = 0; b <= totalPieces && !done; b += 1) {
+        for (let c = 0; c <= totalPieces; c += 1) {
+          if (a + b + c > totalPieces) continue
           test([a, b, c])
           if (bestWaste === 0) {
             done = true
@@ -451,7 +551,7 @@ export const calculatePergolaYield = ({
 
   const processSidePurlins = () => {
     if (b34 === 0 && b35 === 0) {
-      reportProgress(100, 'Privacy panel purlins skipped.')
+      reportProgress(90, 'Privacy panel purlins skipped.')
       return
     }
 
@@ -461,7 +561,7 @@ export const calculatePergolaYield = ({
     const sideRows = matchingTubeRows(tubingRows, sideSize, privacyThick)
     if (!sideRows.length) {
       warnings.push(`No privacy panel purlin tubing matched ${sideSize} at ${privacyPanelPurlinThickness}.`)
-      reportProgress(100, 'Privacy panel purlins skipped.')
+      reportProgress(90, 'Privacy panel purlins skipped.')
       return
     }
 
@@ -488,7 +588,7 @@ export const calculatePergolaYield = ({
     const section = toCutPlanSection('Privacy Panel Plan', result.plan)
     if (section) cutPlans.push(section)
     purlinPieces.push(...collectCuts(result.plan))
-    reportProgress(100, 'Privacy panel purlin plan complete.')
+    reportProgress(90, 'Privacy panel purlin plan complete.')
   }
 
   const processRoofPurlins = () => {
@@ -497,7 +597,7 @@ export const calculatePergolaYield = ({
     const roofRows = matchingTubeRows(tubingRows, roofSize, roofThick)
     if (!roofRows.length) {
       warnings.push(`No roof purlin tubing matched ${roofSize} at ${roofPurlinThickness}.`)
-      reportProgress(100, 'Roof purlins skipped.')
+      reportProgress(90, 'Roof purlins skipped.')
       return
     }
 
@@ -523,12 +623,12 @@ export const calculatePergolaYield = ({
 
   if (beamThick == null) {
     warnings.push('Column & Beam Thickness is required before calculating yield.')
-    reportProgress(100, 'Yield calculation stopped.')
+    reportProgress(90, 'Yield calculation stopped.')
   } else {
     const beamRows = matchingTubeRows(tubingRows, beamSize, beamThick)
     if (!beamRows.length) {
       warnings.push(`No column/beam tubing matched ${beamSize} at ${columnBeamThickness}.`)
-      reportProgress(100, 'Columns and beams skipped.')
+      reportProgress(90, 'Columns and beams skipped.')
     } else {
       reportProgress(10, 'Calculating columns and beams plan...')
       const halfB30 = Math.trunc(b30 / 2)

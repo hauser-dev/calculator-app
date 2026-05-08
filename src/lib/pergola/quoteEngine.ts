@@ -362,12 +362,12 @@ export const computePieceBreakdown = (state: QuoteEngineState): QuoteEngineState
 
   const sideLengthQty =
     next.sidePurlins.alignment === 'Parallel to top'
-      ? (Math.trunc(columns / 2) - 1) * sideLengthReq
+      ? sideLengthPanels * (Math.trunc(columns / 2) - 1) * sideLengthReq
       : next.sidePurlins.alignment === 'Parallel to height'
-        ? sideLengthReq - Math.trunc((columns - 4) / 2)
+        ? sideLengthPanels * (sideLengthReq - Math.trunc((columns - 4) / 2))
         : sideLengthReq
 
-  const sideDepthQty = sideDepthReq
+  const sideDepthQty = sideDepthPanels * sideDepthReq
 
   const standardBlocks = columns <= 4 ? 2 * columns : 8 + (columns - 4) * 3
   const columnAccessories = Math.max(columns, 0)
@@ -1001,7 +1001,6 @@ export const createInitialQuoteState = (): QuoteEngineState => {
 }
 
 export const applySyncFeetInchesOnly = syncFeetInches
-
 
 
 

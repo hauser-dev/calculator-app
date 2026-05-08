@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -400,6 +407,547 @@ const CutPlanDiagram = ({ line, unit }: { line: YieldCutPlanSection['lines'][num
   )
 }
 
+type PreviewVec3 = { x: number; y: number; z: number }
+type PreviewBox = {
+  center: PreviewVec3
+  size: PreviewVec3
+  color: string
+  stroke: string
+}
+type PergolaPreviewModel = {
+  boxes: PreviewBox[]
+  lengthFt: number
+  depthFt: number
+  heightFt: number
+}
+type PergolaPreviewCamera = {
+  yaw: number
+  pitch: number
+  zoom: number
+  panX: number
+  panY: number
+}
+type PergolaPreviewSnapshot = {
+  input: PergolaInput
+  pieceCounts: PieceCounts
+  pieceSizes: PieceSizes
+  privacyPanelsEnabled: boolean
+}
+
+const PREVIEW_DEFAULT_CAMERA: PergolaPreviewCamera = { yaw: -34, pitch: 22, zoom: 1, panX: 0, panY: 0 }
+
+const parsePreviewSizeInches = (raw: string): { min: number; max: number } => {
+  const match = raw.match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/i)
+  if (!match) return { min: 2, max: 4 }
+  const first = Number(match[1])
+  const second = Number(match[2])
+  if (!Number.isFinite(first) || !Number.isFinite(second) || first <= 0 || second <= 0) {
+    return { min: 2, max: 4 }
+  }
+  return { min: Math.min(first, second), max: Math.max(first, second) }
+}
+
+const numericPieceCount = (value: number | null | undefined, fallback = 0) =>
+  typeof value === 'number' && Number.isFinite(value) ? Math.max(Math.round(value), 0) : fallback
+
+const distributePreviewPositions = (start: number, end: number, count: number): number[] => {
+  if (count <= 0) return []
+  if (count === 1) return [(start + end) / 2]
+  return Array.from({ length: count }, (_, index) => start + ((end - start) * index) / (count - 1))
+}
+
+const allocatePreviewCounts = (total: number, buckets: number): number[] => {
+  if (total <= 0 || buckets <= 0) return []
+  const base = Math.floor(total / buckets)
+  const remainder = total % buckets
+  return Array.from({ length: buckets }, (_, index) => base + (index < remainder ? 1 : 0))
+}
+
+const previewSegmentsFromStations = (stations: number[], fallbackEnd: number, clearance = 0): Array<[number, number]> => {
+  const unique = Array.from(new Set(stations.map((station) => Number(station.toFixed(4))))).sort((a, b) => a - b)
+  if (unique.length < 2) return [[clearance, Math.max(clearance, fallbackEnd - clearance)]]
+  return unique.slice(0, -1).reduce<Array<[number, number]>>((segments, station, index) => {
+    const start = station + clearance
+    const end = unique[index + 1] - clearance
+    if (end > start) segments.push([start, end])
+    return segments
+  }, [])
+}
+
+const distributePreviewCentersAcrossSegments = (segments: Array<[number, number]>, total: number, itemSize: number) => {
+  if (total <= 0 || !segments.length) return []
+  const usableSegments = segments
+    .map(([start, end]) => [start + itemSize / 2, end - itemSize / 2] as [number, number])
+    .filter(([start, end]) => end >= start)
+  if (!usableSegments.length) return []
+
+  const totalLength = usableSegments.reduce((sum, [start, end]) => sum + Math.max(end - start, 0.001), 0)
+  const rawAllocations = usableSegments.map(([start, end]) => (Math.max(end - start, 0.001) / totalLength) * total)
+  const allocations = rawAllocations.map(Math.floor)
+  let remainder = total - allocations.reduce((sum, value) => sum + value, 0)
+  rawAllocations
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((a, b) => b.fraction - a.fraction)
+    .forEach(({ index }) => {
+      if (remainder <= 0) return
+      allocations[index] += 1
+      remainder -= 1
+    })
+
+  return usableSegments.flatMap(([start, end], index) => distributePreviewPositions(start, end, allocations[index] ?? 0))
+}
+
+const selectedPreviewSideIndexes = (count: number) => {
+  if (count <= 0) return []
+  if (count === 1) return [1]
+  return [0, 1]
+}
+
+const shadePreviewColor = (hex: string, factor: number) => {
+  const cleaned = hex.replace('#', '')
+  const value = Number.parseInt(cleaned.length === 3 ? cleaned.split('').map((char) => char + char).join('') : cleaned, 16)
+  if (!Number.isFinite(value)) return hex
+  const channel = (shift: number) => Math.max(0, Math.min(255, Math.round(((value >> shift) & 255) * factor)))
+  return `rgb(${channel(16)}, ${channel(8)}, ${channel(0)})`
+}
+
+const buildPergolaPreviewModel = (
+  input: PergolaInput,
+  pieceCounts: PieceCounts,
+  pieceSizes: PieceSizes,
+  privacyPanelsEnabled: boolean,
+): PergolaPreviewModel => {
+  const lengthFt = Math.max(input.dimensions.lengthFt, 1)
+  const depthFt = Math.max(input.dimensions.depthFt, 1)
+  const heightFt = Math.max(input.dimensions.heightFt, 1)
+  const boxes: PreviewBox[] = []
+  const addBox = (center: PreviewVec3, size: PreviewVec3, color: string, stroke = '#334155') => {
+    if (size.x <= 0 || size.y <= 0 || size.z <= 0) return
+    boxes.push({ center, size, color, stroke })
+  }
+
+  const beamSize = parsePreviewSizeInches(pieceSizes.verticalColumns || (input.type === 'Grand Pergola' ? '6x6' : '4x4'))
+  const beamFt = Math.max(beamSize.max / IN_PER_FT, 0.25)
+  const beamClearance = beamFt / 2
+  const beamY = Math.max(heightFt - beamFt / 2, beamFt / 2)
+  const columns = Math.max(numericPieceCount(pieceCounts.verticalColumns, 4), 4)
+  const frontCount = Math.max(2, Math.floor(columns / 2))
+  const backCount = Math.max(2, columns - frontCount)
+  const longAxis: 'length' | 'depth' = lengthFt >= depthFt ? 'length' : 'depth'
+  const columnColor = '#111827'
+  const beamColor = '#111827'
+  const roofColor = '#cbd5e1'
+  const privacyColor = '#d1d5db'
+
+  let crossStationsX = [0, lengthFt]
+  let crossStationsZ = [0, depthFt]
+  let lengthSideSegmentsBySide: Array<Array<[number, number]>> = [
+    previewSegmentsFromStations([0, lengthFt], lengthFt, beamClearance),
+    previewSegmentsFromStations([0, lengthFt], lengthFt, beamClearance),
+  ]
+  let depthSideSegmentsBySide: Array<Array<[number, number]>> = [
+    previewSegmentsFromStations([0, depthFt], depthFt, beamClearance),
+    previewSegmentsFromStations([0, depthFt], depthFt, beamClearance),
+  ]
+
+  if (longAxis === 'length') {
+    const frontPositions = distributePreviewPositions(0, lengthFt, frontCount)
+    const backPositions = distributePreviewPositions(0, lengthFt, backCount)
+    for (const x of frontPositions) addBox({ x, y: heightFt / 2, z: 0 }, { x: beamFt, y: heightFt, z: beamFt }, columnColor)
+    for (const x of backPositions) addBox({ x, y: heightFt / 2, z: depthFt }, { x: beamFt, y: heightFt, z: beamFt }, columnColor)
+
+    const sharedStationCount = Math.max(2, Math.min(frontCount, backCount))
+    crossStationsX = distributePreviewPositions(0, lengthFt, sharedStationCount)
+    lengthSideSegmentsBySide = [
+      previewSegmentsFromStations(frontPositions, lengthFt, beamClearance),
+      previewSegmentsFromStations(backPositions, lengthFt, beamClearance),
+    ]
+
+    addBox({ x: lengthFt / 2, y: beamY, z: 0 }, { x: lengthFt + beamFt, y: beamFt, z: beamFt }, beamColor)
+    addBox({ x: lengthFt / 2, y: beamY, z: depthFt }, { x: lengthFt + beamFt, y: beamFt, z: beamFt }, beamColor)
+    for (const x of crossStationsX) {
+      addBox({ x, y: beamY, z: depthFt / 2 }, { x: beamFt, y: beamFt, z: depthFt + beamFt }, beamColor)
+    }
+  } else {
+    const leftPositions = distributePreviewPositions(0, depthFt, frontCount)
+    const rightPositions = distributePreviewPositions(0, depthFt, backCount)
+    for (const z of leftPositions) addBox({ x: 0, y: heightFt / 2, z }, { x: beamFt, y: heightFt, z: beamFt }, columnColor)
+    for (const z of rightPositions) addBox({ x: lengthFt, y: heightFt / 2, z }, { x: beamFt, y: heightFt, z: beamFt }, columnColor)
+
+    const sharedStationCount = Math.max(2, Math.min(frontCount, backCount))
+    crossStationsZ = distributePreviewPositions(0, depthFt, sharedStationCount)
+    depthSideSegmentsBySide = [
+      previewSegmentsFromStations(leftPositions, depthFt, beamClearance),
+      previewSegmentsFromStations(rightPositions, depthFt, beamClearance),
+    ]
+
+    addBox({ x: 0, y: beamY, z: depthFt / 2 }, { x: beamFt, y: beamFt, z: depthFt + beamFt }, beamColor)
+    addBox({ x: lengthFt, y: beamY, z: depthFt / 2 }, { x: beamFt, y: beamFt, z: depthFt + beamFt }, beamColor)
+    for (const z of crossStationsZ) {
+      addBox({ x: lengthFt / 2, y: beamY, z }, { x: lengthFt + beamFt, y: beamFt, z: beamFt }, beamColor)
+    }
+  }
+
+  const roofCount = numericPieceCount(pieceCounts.roofPurlins)
+  const roofSize = parsePreviewSizeInches(pieceSizes.roofPurlins || input.roof.size)
+  const roofFaceFt = (input.roof.orientation === 'Horizontal' ? roofSize.max : roofSize.min) / IN_PER_FT
+  const roofThicknessFt = (input.roof.orientation === 'Horizontal' ? roofSize.min : roofSize.max) / IN_PER_FT
+  const roofRunAxis: 'length' | 'depth' = input.roof.alignment === 'Parallel to length' ? 'length' : 'depth'
+  const roofTopFt = Math.max(heightFt, heightFt - beamFt + roofThicknessFt)
+  if (roofCount > 0) {
+    const roofY = heightFt - beamFt + roofThicknessFt / 2
+    if (roofRunAxis === 'length') {
+      const runSegments = previewSegmentsFromStations(longAxis === 'length' ? crossStationsX : [0, lengthFt], lengthFt, beamClearance)
+      const acrossSegments = previewSegmentsFromStations(longAxis === 'depth' ? crossStationsZ : [0, depthFt], depthFt, beamClearance)
+      const allocations = allocatePreviewCounts(roofCount, runSegments.length)
+      runSegments.forEach(([start, end], segmentIndex) => {
+        const countForSegment = allocations[segmentIndex] ?? 0
+        const zPositions = distributePreviewCentersAcrossSegments(acrossSegments, countForSegment, roofFaceFt)
+        for (const z of zPositions) {
+          addBox({ x: (start + end) / 2, y: roofY, z }, { x: Math.max(end - start, roofFaceFt), y: roofThicknessFt, z: roofFaceFt }, roofColor, '#64748b')
+        }
+      })
+    } else {
+      const runSegments = previewSegmentsFromStations(longAxis === 'depth' ? crossStationsZ : [0, depthFt], depthFt, beamClearance)
+      const acrossSegments = previewSegmentsFromStations(longAxis === 'length' ? crossStationsX : [0, lengthFt], lengthFt, beamClearance)
+      const allocations = allocatePreviewCounts(roofCount, runSegments.length)
+      runSegments.forEach(([start, end], segmentIndex) => {
+        const countForSegment = allocations[segmentIndex] ?? 0
+        const xPositions = distributePreviewCentersAcrossSegments(acrossSegments, countForSegment, roofFaceFt)
+        for (const x of xPositions) {
+          addBox({ x, y: roofY, z: (start + end) / 2 }, { x: roofFaceFt, y: roofThicknessFt, z: Math.max(end - start, roofFaceFt) }, roofColor, '#64748b')
+        }
+      })
+    }
+  }
+
+  const sideLengthCount = privacyPanelsEnabled ? numericPieceCount(pieceCounts.sidePurlinsLength) : 0
+  const sideDepthCount = privacyPanelsEnabled ? numericPieceCount(pieceCounts.sidePurlinsDepth) : 0
+  const sideSize = parsePreviewSizeInches(pieceSizes.sidePurlinsLength || input.privacy.size)
+  const sideFaceFt = (input.privacy.orientation === 'Horizontal' ? sideSize.max : sideSize.min) / IN_PER_FT
+  const sideOutFt = (input.privacy.orientation === 'Horizontal' ? sideSize.min : sideSize.max) / IN_PER_FT
+  const sideBottom = Math.max(input.privacy.groundClearanceIn / IN_PER_FT, 0)
+  const sideTop = Math.max(sideBottom + sideFaceFt, heightFt - input.privacy.topClearanceIn / IN_PER_FT - beamFt)
+  const sideHeight = Math.max(sideTop - sideBottom, sideFaceFt)
+  const lengthSideIndexes = selectedPreviewSideIndexes(Math.max(0, Math.min(2, Math.round(input.privacy.panelCountLength))))
+  const depthSideIndexes = selectedPreviewSideIndexes(Math.max(0, Math.min(2, Math.round(input.privacy.panelCountDepth))))
+
+  const addHorizontalLengthSidePurlins = (count: number) => {
+    const buckets = lengthSideIndexes.flatMap((sideIndex) =>
+      lengthSideSegmentsBySide[sideIndex].map((segment) => ({ segment, sideIndex })),
+    )
+    const allocations = allocatePreviewCounts(count, buckets.length)
+    buckets.forEach(({ segment: [start, end], sideIndex }, bucketIndex) => {
+      const z = sideIndex === 0 ? 0 : depthFt
+      const yPositions = distributePreviewPositions(sideBottom + sideFaceFt / 2, sideTop - sideFaceFt / 2, allocations[bucketIndex] ?? 0)
+      for (const y of yPositions) {
+        addBox({ x: (start + end) / 2, y, z }, { x: Math.max(end - start, sideFaceFt), y: sideFaceFt, z: sideOutFt }, privacyColor, '#64748b')
+      }
+    })
+  }
+  const addVerticalLengthSidePurlins = (count: number) => {
+    const buckets = lengthSideIndexes.flatMap((sideIndex) =>
+      lengthSideSegmentsBySide[sideIndex].map((segment) => ({ segment, sideIndex })),
+    )
+    const allocations = allocatePreviewCounts(count, buckets.length)
+    buckets.forEach(({ segment, sideIndex }, bucketIndex) => {
+      const z = sideIndex === 0 ? 0 : depthFt
+      const xPositions = distributePreviewCentersAcrossSegments([segment], allocations[bucketIndex] ?? 0, sideFaceFt)
+      for (const x of xPositions) {
+        addBox({ x, y: sideBottom + sideHeight / 2, z }, { x: sideFaceFt, y: sideHeight, z: sideOutFt }, privacyColor, '#64748b')
+      }
+    })
+  }
+  const addHorizontalDepthSidePurlins = (count: number) => {
+    const buckets = depthSideIndexes.flatMap((sideIndex) =>
+      depthSideSegmentsBySide[sideIndex].map((segment) => ({ segment, sideIndex })),
+    )
+    const allocations = allocatePreviewCounts(count, buckets.length)
+    buckets.forEach(({ segment: [start, end], sideIndex }, bucketIndex) => {
+      const x = sideIndex === 0 ? 0 : lengthFt
+      const yPositions = distributePreviewPositions(sideBottom + sideFaceFt / 2, sideTop - sideFaceFt / 2, allocations[bucketIndex] ?? 0)
+      for (const y of yPositions) {
+        addBox({ x, y, z: (start + end) / 2 }, { x: sideOutFt, y: sideFaceFt, z: Math.max(end - start, sideFaceFt) }, privacyColor, '#64748b')
+      }
+    })
+  }
+  const addVerticalDepthSidePurlins = (count: number) => {
+    const buckets = depthSideIndexes.flatMap((sideIndex) =>
+      depthSideSegmentsBySide[sideIndex].map((segment) => ({ segment, sideIndex })),
+    )
+    const allocations = allocatePreviewCounts(count, buckets.length)
+    buckets.forEach(({ segment, sideIndex }, bucketIndex) => {
+      const x = sideIndex === 0 ? 0 : lengthFt
+      const zPositions = distributePreviewCentersAcrossSegments([segment], allocations[bucketIndex] ?? 0, sideFaceFt)
+      for (const z of zPositions) {
+        addBox({ x, y: sideBottom + sideHeight / 2, z }, { x: sideOutFt, y: sideHeight, z: sideFaceFt }, privacyColor, '#64748b')
+      }
+    })
+  }
+
+  if (input.privacy.alignment === 'Parallel to top') {
+    addHorizontalLengthSidePurlins(sideLengthCount)
+    addHorizontalDepthSidePurlins(sideDepthCount)
+  } else {
+    addVerticalLengthSidePurlins(sideLengthCount)
+    addVerticalDepthSidePurlins(sideDepthCount)
+  }
+
+  return { boxes, lengthFt, depthFt, heightFt: Math.max(heightFt, roofTopFt) }
+}
+
+const drawPergolaPreview = (
+  canvas: HTMLCanvasElement,
+  model: PergolaPreviewModel,
+  camera: PergolaPreviewCamera,
+) => {
+  const cssWidth = Math.max(canvas.clientWidth, 320)
+  const cssHeight = Math.max(canvas.clientHeight, 360)
+  const dpr = window.devicePixelRatio || 1
+  canvas.width = Math.round(cssWidth * dpr)
+  canvas.height = Math.round(cssHeight * dpr)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, cssWidth, cssHeight)
+  ctx.fillStyle = '#f8fafc'
+  ctx.fillRect(0, 0, cssWidth, cssHeight)
+
+  const yaw = (camera.yaw * Math.PI) / 180
+  const pitch = (camera.pitch * Math.PI) / 180
+  const footprint = Math.max(model.lengthFt, model.depthFt, 1)
+  const scale = Math.min(cssWidth / (footprint * 1.6), cssHeight / ((model.heightFt + footprint * 0.35) * 1.3)) * camera.zoom
+
+  const project = (point: PreviewVec3) => {
+    const x = point.x - model.lengthFt / 2
+    const y = point.y - model.heightFt / 2
+    const z = point.z - model.depthFt / 2
+    const yawX = x * Math.cos(yaw) - z * Math.sin(yaw)
+    const yawZ = x * Math.sin(yaw) + z * Math.cos(yaw)
+    const pitchY = y * Math.cos(pitch) - yawZ * Math.sin(pitch)
+    const pitchZ = y * Math.sin(pitch) + yawZ * Math.cos(pitch)
+    return {
+      x: cssWidth / 2 + yawX * scale + camera.panX,
+      y: cssHeight * 0.56 - pitchY * scale + camera.panY,
+      depth: pitchZ,
+    }
+  }
+
+  ctx.lineWidth = 1
+  ctx.strokeStyle = '#d1d5db'
+  const gridStep = Math.max(2, Math.round(footprint / 6))
+  for (let x = 0; x <= model.lengthFt + 0.001; x += gridStep) {
+    const start = project({ x, y: 0, z: 0 })
+    const end = project({ x, y: 0, z: model.depthFt })
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(end.x, end.y)
+    ctx.stroke()
+  }
+  for (let z = 0; z <= model.depthFt + 0.001; z += gridStep) {
+    const start = project({ x: 0, y: 0, z })
+    const end = project({ x: model.lengthFt, y: 0, z })
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(end.x, end.y)
+    ctx.stroke()
+  }
+
+  const faces: Array<{ points: Array<{ x: number; y: number }>; depth: number; color: string; stroke: string }> = []
+  const faceDefinitions = [
+    { indexes: [0, 1, 2, 3], shade: 0.78 },
+    { indexes: [5, 4, 7, 6], shade: 0.9 },
+    { indexes: [4, 0, 3, 7], shade: 0.7 },
+    { indexes: [1, 5, 6, 2], shade: 0.82 },
+    { indexes: [4, 5, 1, 0], shade: 0.62 },
+    { indexes: [3, 2, 6, 7], shade: 1.08 },
+  ]
+
+  for (const box of model.boxes) {
+    const { center, size } = box
+    const hx = size.x / 2
+    const hy = size.y / 2
+    const hz = size.z / 2
+    const vertices = [
+      { x: center.x - hx, y: center.y - hy, z: center.z - hz },
+      { x: center.x + hx, y: center.y - hy, z: center.z - hz },
+      { x: center.x + hx, y: center.y + hy, z: center.z - hz },
+      { x: center.x - hx, y: center.y + hy, z: center.z - hz },
+      { x: center.x - hx, y: center.y - hy, z: center.z + hz },
+      { x: center.x + hx, y: center.y - hy, z: center.z + hz },
+      { x: center.x + hx, y: center.y + hy, z: center.z + hz },
+      { x: center.x - hx, y: center.y + hy, z: center.z + hz },
+    ].map(project)
+
+    for (const face of faceDefinitions) {
+      const projected = face.indexes.map((index) => vertices[index])
+      faces.push({
+        points: projected.map((point) => ({ x: point.x, y: point.y })),
+        depth: projected.reduce((sum, point) => sum + point.depth, 0) / projected.length,
+        color: shadePreviewColor(box.color, face.shade),
+        stroke: box.stroke,
+      })
+    }
+  }
+
+  faces
+    .sort((a, b) => a.depth - b.depth)
+    .forEach((face) => {
+      ctx.beginPath()
+      face.points.forEach((point, index) => {
+        if (index === 0) ctx.moveTo(point.x, point.y)
+        else ctx.lineTo(point.x, point.y)
+      })
+      ctx.closePath()
+      ctx.fillStyle = face.color
+      ctx.strokeStyle = face.stroke
+      ctx.fill()
+      ctx.stroke()
+    })
+
+  ctx.fillStyle = '#475569'
+  ctx.font = '12px sans-serif'
+  ctx.fillText(`${formatMeasurementValue(model.lengthFt, 'ft')} ft L`, 16, cssHeight - 34)
+  ctx.fillText(`${formatMeasurementValue(model.depthFt, 'ft')} ft D`, 16, cssHeight - 18)
+}
+
+const createPergolaPreviewSnapshot = (
+  input: PergolaInput,
+  pieceCounts: PieceCounts,
+  pieceSizes: PieceSizes,
+  privacyPanelsEnabled: boolean,
+): PergolaPreviewSnapshot => ({
+  input: {
+    ...input,
+    dimensions: { ...input.dimensions },
+    roof: { ...input.roof },
+    privacy: { ...input.privacy },
+  },
+  pieceCounts: { ...pieceCounts },
+  pieceSizes: { ...pieceSizes },
+  privacyPanelsEnabled,
+})
+
+const PergolaPreview3D = ({
+  input,
+  pieceCounts,
+  pieceSizes,
+  privacyPanelsEnabled,
+}: {
+  input: PergolaInput
+  pieceCounts: PieceCounts
+  pieceSizes: PieceSizes
+  privacyPanelsEnabled: boolean
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const dragRef = useRef<{ active: boolean; lastX: number; lastY: number; mode: 'rotate' | 'pan' }>({
+    active: false,
+    lastX: 0,
+    lastY: 0,
+    mode: 'rotate',
+  })
+  const [camera, setCamera] = useState<PergolaPreviewCamera>(PREVIEW_DEFAULT_CAMERA)
+  const model = useMemo(
+    () => buildPergolaPreviewModel(input, pieceCounts, pieceSizes, privacyPanelsEnabled),
+    [input, pieceCounts, pieceSizes, privacyPanelsEnabled],
+  )
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const draw = () => drawPergolaPreview(canvas, model, camera)
+    draw()
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(draw)
+      observer.observe(canvas)
+      return () => observer.disconnect()
+    }
+
+    window.addEventListener('resize', draw)
+    return () => window.removeEventListener('resize', draw)
+  }, [camera, model])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      setCamera((current) => ({
+        ...current,
+        zoom: Math.max(0.55, Math.min(2.2, current.zoom * (event.deltaY > 0 ? 0.92 : 1.08))),
+      }))
+    }
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+  }, [])
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    dragRef.current = {
+      active: true,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      mode: event.shiftKey || event.button === 1 || event.button === 2 ? 'pan' : 'rotate',
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!dragRef.current.active) return
+    const dx = event.clientX - dragRef.current.lastX
+    const dy = event.clientY - dragRef.current.lastY
+    dragRef.current.lastX = event.clientX
+    dragRef.current.lastY = event.clientY
+
+    setCamera((current) => {
+      if (dragRef.current.mode === 'pan') {
+        return { ...current, panX: current.panX + dx, panY: current.panY + dy }
+      }
+      return {
+        ...current,
+        yaw: current.yaw + dx * 0.45,
+        pitch: Math.max(-80, Math.min(86, current.pitch + dy * 0.35)),
+      }
+    })
+  }
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    dragRef.current.active = false
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
+  return (
+    <div className="mt-6 overflow-hidden rounded-lg border border-border bg-background">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div>
+          <h3 className="text-sm font-semibold">3D Pergola Preview</h3>
+          <p className="text-xs text-muted-foreground">Drag to orbit. Shift-drag to pan. Scroll to zoom.</p>
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-neutral-900" /> Columns and beams</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-slate-300" /> Roof purlins</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-zinc-300" /> Privacy purlins</span>
+        </div>
+      </div>
+      <div className="relative h-[440px] bg-slate-50">
+        <canvas
+          ref={canvasRef}
+          className="h-full w-full cursor-grab touch-none overscroll-contain active:cursor-grabbing"
+          aria-label="Interactive 3D pergola preview"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerCancel={handlePointerUp}
+          onPointerUp={handlePointerUp}
+          onContextMenu={(event) => event.preventDefault()}
+        />
+      </div>
+    </div>
+  )
+}
+
 const ADDITIONAL_ITEM_DEFAULT_UNIT_COST: Record<string, number | null> = {
   canopies: 20,
   feet: 15,
@@ -446,6 +994,7 @@ const PergolaCalculator = () => {
   const [yieldPlanSections, setYieldPlanSections] = useState<YieldCutPlanSection[]>([])
   const [yieldMessage, setYieldMessage] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [yieldProgress, setYieldProgress] = useState<PergolaYieldProgress | null>(null)
+  const [pergolaPreviewSnapshot, setPergolaPreviewSnapshot] = useState<PergolaPreviewSnapshot | null>(null)
   const [isYieldRunning, setIsYieldRunning] = useState(false)
   const [bufferInput, setBufferInput] = useState('')
   const [sellMarginInput, setSellMarginInput] = useState('50')
@@ -694,6 +1243,10 @@ const PergolaCalculator = () => {
     }
   }, [input.type, input.privacy.customSize, input.privacy.size, input.roof.customSize, input.roof.size, privacyPanelsEnabled])
 
+  useEffect(() => {
+    setPergolaPreviewSnapshot(null)
+  }, [effectiveInput, effectivePieceCounts, pieceSizes, privacyPanelsEnabled])
+
   const resetAll = () => {
     roofSyncSourceRef.current = 'coverage'
     privacySyncSourceRef.current = 'coverage'
@@ -708,6 +1261,7 @@ const PergolaCalculator = () => {
     setYieldPlanSections([])
     setYieldMessage(null)
     setYieldProgress(null)
+    setPergolaPreviewSnapshot(null)
     setIsYieldRunning(false)
     yieldWorkerRef.current?.terminate()
     yieldWorkerRef.current = null
@@ -962,7 +1516,7 @@ const PergolaCalculator = () => {
     return [...generated, ...manualRows]
   }
 
-  const applyYieldResult = (yieldResult: PergolaYieldResult) => {
+  const applyYieldResult = (yieldResult: PergolaYieldResult, previewSnapshot: PergolaPreviewSnapshot) => {
     setPricingSections((prev) => ({
       ...prev,
       tubing: normalizeGeneratedPricingRows(yieldResult.pricingSections.tubing),
@@ -973,8 +1527,10 @@ const PergolaCalculator = () => {
       additional: mergeAdditionalPricingRows(yieldResult.pricingSections.additional, prev.additional),
     }))
     setYieldPlanSections(yieldResult.cutPlans)
+    setPergolaPreviewSnapshot(previewSnapshot)
     setResultsSectionState((prev) => ({
       ...prev,
+      breakdown: true,
       cutPlans: true,
       costDetails: true,
     }))
@@ -1006,9 +1562,11 @@ const PergolaCalculator = () => {
       angleRows: angleRowsState,
       flatbarRows: flatbarRowsState,
     }
+    const previewSnapshot = createPergolaPreviewSnapshot(effectiveInput, effectivePieceCounts, pieceSizes, privacyPanelsEnabled)
 
     yieldWorkerRef.current?.terminate()
     setYieldMessage(null)
+    setPergolaPreviewSnapshot(null)
     setYieldProgress({ percent: 0, label: 'Preparing yield calculation...' })
     setIsYieldRunning(true)
 
@@ -1017,8 +1575,9 @@ const PergolaCalculator = () => {
         ...payload,
         onProgress: (progress) => setYieldProgress(progress),
       })
-      applyYieldResult(yieldResult)
-      setYieldProgress({ percent: 100, label: 'Yield calculated.' })
+      setYieldProgress({ percent: 95, label: 'Generating 3D preview...' })
+      applyYieldResult(yieldResult, previewSnapshot)
+      setYieldProgress({ percent: 100, label: 'Yield and 3D preview calculated.' })
       setIsYieldRunning(false)
       return
     }
@@ -1034,8 +1593,9 @@ const PergolaCalculator = () => {
       }
 
       if (message.type === 'result') {
-        applyYieldResult(message.result)
-        setYieldProgress({ percent: 100, label: 'Yield calculated.' })
+        setYieldProgress({ percent: 95, label: 'Generating 3D preview...' })
+        applyYieldResult(message.result, previewSnapshot)
+        setYieldProgress({ percent: 100, label: 'Yield and 3D preview calculated.' })
         setIsYieldRunning(false)
         worker.terminate()
         if (yieldWorkerRef.current === worker) yieldWorkerRef.current = null
@@ -1777,6 +2337,14 @@ const PergolaCalculator = () => {
                           ))}
                         </TableBody>
                       </Table>
+                      {pergolaPreviewSnapshot && (
+                        <PergolaPreview3D
+                          input={pergolaPreviewSnapshot.input}
+                          pieceCounts={pergolaPreviewSnapshot.pieceCounts}
+                          pieceSizes={pergolaPreviewSnapshot.pieceSizes}
+                          privacyPanelsEnabled={pergolaPreviewSnapshot.privacyPanelsEnabled}
+                        />
+                      )}
                     </CardContent>}
                   </Card>
                 </section>
