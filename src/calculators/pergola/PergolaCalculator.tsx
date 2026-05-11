@@ -1025,7 +1025,7 @@ const PergolaCalculator = () => {
   const [pergolaPreviewSnapshot, setPergolaPreviewSnapshot] = useState<PergolaPreviewSnapshot | null>(null)
   const [isYieldRunning, setIsYieldRunning] = useState(false)
   const [bufferInput, setBufferInput] = useState('')
-  const [sellMarginInput, setSellMarginInput] = useState('50')
+  const [sellMarginInput, setSellMarginInput] = useState('60')
   const [isPrintMode, setIsPrintMode] = useState(false)
   const [activeTab, setActiveTab] = useState<'input' | 'results' | 'settings'>('input')
   const [resultsSectionState, setResultsSectionState] = useState<Record<PergolaResultsSectionKey, boolean>>({
@@ -1294,7 +1294,7 @@ const PergolaCalculator = () => {
     yieldWorkerRef.current?.terminate()
     yieldWorkerRef.current = null
     setBufferInput('')
-    setSellMarginInput('50')
+    setSellMarginInput('60')
     setAllResultsSections(true)
     setPieceQtyEdits({})
     setTubingRowsState(tubingRows.map((row) => ({ ...row })))
@@ -1313,6 +1313,18 @@ const PergolaCalculator = () => {
         [key]: valueFt,
       },
     }))
+  }
+
+  const updateSellMarginInput = (value: string) => {
+    if (value.trim() === '') {
+      setSellMarginInput('')
+      return
+    }
+
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) {
+      setSellMarginInput(String(Math.round(parsed)))
+    }
   }
 
   const updateRoofInput = (updates: Partial<PergolaInput['roof']>, source = roofSyncSourceRef.current) => {
@@ -2590,7 +2602,7 @@ const PergolaCalculator = () => {
                           <div className="results-summary-right-col space-y-4 md:pt-14">
                             <div className="space-y-1">
                               <Label>Target Margin (%)</Label>
-                              <Input type="number" step="0.01" value={sellMarginInput} onChange={(event) => setSellMarginInput(event.target.value)} />
+                              <Input type="number" step="1" value={sellMarginInput} onChange={(event) => updateSellMarginInput(event.target.value)} />
                             </div>
                             <div>
                               <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Sell price</p>
