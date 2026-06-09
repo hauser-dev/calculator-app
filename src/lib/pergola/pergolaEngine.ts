@@ -100,6 +100,7 @@ export type PergolaQuoteRequest = {
 
 export type PergolaQuoteOutput = PergolaOutput & {
   yieldResult: PergolaYieldResult
+  pricingSubTotal: number
 }
 
 type ParityCase = {
@@ -410,6 +411,18 @@ const formatThickness = (value: number | string | null | undefined): string => {
   return typeof value === 'string' ? value : ''
 }
 
+const parsePricingNumber = (raw: string): number => {
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const calculatePricingSubTotal = (pricingSections: PergolaYieldResult['pricingSections']): number =>
+  Object.values(pricingSections).reduce(
+    (sectionsTotal, rows) =>
+      sectionsTotal + rows.reduce((rowTotal, row) => rowTotal + parsePricingNumber(row.quantity) * parsePricingNumber(row.unitCost), 0),
+    0,
+  )
+
 const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQuoteOutput => {
   const { yieldOptions, ...quoteOptions } = options
   const quote = calculatePergola(input, quoteOptions)
@@ -428,7 +441,7 @@ const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQ
     onProgress: yieldOptions?.onProgress,
   })
 
-  return { ...quote, yieldResult }
+  return { ...quote, yieldResult, pricingSubTotal: calculatePricingSubTotal(yieldResult.pricingSections) }
 }
 
 export { calculatePergola, getPergolaQuote, syncPergolaPrivacyCoverageGap, syncPergolaRoofCoverageGap, validatePergolaInput }
