@@ -1,6 +1,8 @@
 import parityCasesRaw from '../../data/pergola/parity-cases.json' with { type: 'json' }
+import { angleRows, beamThicknessBySize, connectorRows, endCapRows, flatbarRows, tubingRows } from './pergolaData.ts'
 import { applyQuoteChange, createInitialQuoteState } from './quoteEngine.ts'
 import type { CoverageSource, QuoteEngineState } from './quoteSchema.ts'
+import { calculatePergolaYield, type CalculatePergolaYieldOptions, type PergolaYieldResult } from './yieldEngine.ts'
 
 export type MaterialType = 'Aluminum' | 'Alumiwood' | 'Cedar'
 
@@ -85,6 +87,14 @@ export type PergolaOutput = {
   sell60: number
   sell50: number
   errors: string[]
+}
+
+export type PergolaQuoteOptions = CalculatePergolaOptions & {
+  yieldOptions?: Partial<Omit<CalculatePergolaYieldOptions, 'input' | 'beamSize' | 'pieceCounts'>>
+}
+
+export type PergolaQuoteOutput = PergolaOutput & {
+  yieldResult: PergolaYieldResult
 }
 
 type ParityCase = {
@@ -390,4 +400,30 @@ const calculatePergola = (input: PergolaInput, options: CalculatePergolaOptions 
   }
 }
 
-export { calculatePergola, syncPergolaPrivacyCoverageGap, syncPergolaRoofCoverageGap, validatePergolaInput }
+const formatThickness = (value: number | string | null | undefined): string => {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return typeof value === 'string' ? value : ''
+}
+
+const getPergolaQuote = (input: PergolaInput, options: PergolaQuoteOptions = {}): PergolaQuoteOutput => {
+  const { yieldOptions, ...quoteOptions } = options
+  const quote = calculatePergola(input, quoteOptions)
+  const yieldResult = calculatePergolaYield({
+    input,
+    beamSize: quote.beamSize,
+    pieceCounts: quote.pieceCounts,
+    columnBeamThickness: yieldOptions?.columnBeamThickness ?? formatThickness(quote.thickness.columnBeam ?? beamThicknessBySize[quote.beamSize]),
+    roofPurlinThickness: yieldOptions?.roofPurlinThickness ?? formatThickness(quote.thickness.roof),
+    privacyPanelPurlinThickness: yieldOptions?.privacyPanelPurlinThickness ?? formatThickness(quote.thickness.privacy),
+    tubingRows: yieldOptions?.tubingRows ?? tubingRows,
+    connectorRows: yieldOptions?.connectorRows ?? connectorRows,
+    endCapRows: yieldOptions?.endCapRows ?? endCapRows,
+    angleRows: yieldOptions?.angleRows ?? angleRows,
+    flatbarRows: yieldOptions?.flatbarRows ?? flatbarRows,
+    onProgress: yieldOptions?.onProgress,
+  })
+
+  return { ...quote, yieldResult }
+}
+
+export { calculatePergola, getPergolaQuote, syncPergolaPrivacyCoverageGap, syncPergolaRoofCoverageGap, validatePergolaInput }
