@@ -93,6 +93,11 @@ export type PergolaQuoteOptions = CalculatePergolaOptions & {
   yieldOptions?: Partial<Omit<CalculatePergolaYieldOptions, 'input' | 'beamSize' | 'pieceCounts'>>
 }
 
+export type PergolaQuoteRequest = {
+  input: PergolaInput
+  options?: PergolaQuoteOptions
+}
+
 export type PergolaQuoteOutput = PergolaOutput & {
   yieldResult: PergolaYieldResult
 }
@@ -405,7 +410,7 @@ const formatThickness = (value: number | string | null | undefined): string => {
   return typeof value === 'string' ? value : ''
 }
 
-const getPergolaQuote = (input: PergolaInput, options: PergolaQuoteOptions = {}): PergolaQuoteOutput => {
+const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQuoteOutput => {
   const { yieldOptions, ...quoteOptions } = options
   const quote = calculatePergola(input, quoteOptions)
   const yieldResult = calculatePergolaYield({
