@@ -411,6 +411,22 @@ const formatThickness = (value: number | string | null | undefined): string => {
   return typeof value === 'string' ? value : ''
 }
 
+const normalizeTubingSize = (value: string) => value.trim().toLowerCase().replace(/["'\s]/g, '')
+
+const getTubingGaugeForSize = (rows: typeof tubingRows, size: string): string => {
+  const normalizedSize = normalizeTubingSize(size)
+  if (!normalizedSize || normalizedSize === '-') return ''
+
+  const match = rows.find(
+    (row) =>
+      normalizeTubingSize(row.size) === normalizedSize &&
+      typeof row.gauge === 'number' &&
+      Number.isFinite(row.gauge),
+  )
+
+  return match ? String(match.gauge) : ''
+}
+
 const parsePricingNumber = (raw: string): number => {
   const parsed = Number(raw)
   return Number.isFinite(parsed) ? parsed : 0
@@ -426,14 +442,18 @@ const calculatePricingSubTotal = (pricingSections: PergolaYieldResult['pricingSe
 const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQuoteOutput => {
   const { yieldOptions, ...quoteOptions } = options
   const quote = calculatePergola(input, quoteOptions)
+  const yieldTubingRows = yieldOptions?.tubingRows ?? tubingRows
+  const roofSize = input.roof.customSize.trim() || input.roof.size
+  const privacySize = input.privacy.customSize.trim() || input.privacy.size
+  const hasPrivacyPanels = input.privacy.panelCountLength > 0 || input.privacy.panelCountDepth > 0
   const yieldResult = calculatePergolaYield({
     input,
     beamSize: quote.beamSize,
     pieceCounts: quote.pieceCounts,
     columnBeamThickness: yieldOptions?.columnBeamThickness ?? formatThickness(quote.thickness.columnBeam ?? beamThicknessBySize[quote.beamSize]),
-    roofPurlinThickness: yieldOptions?.roofPurlinThickness ?? formatThickness(quote.thickness.roof),
-    privacyPanelPurlinThickness: yieldOptions?.privacyPanelPurlinThickness ?? formatThickness(quote.thickness.privacy),
-    tubingRows: yieldOptions?.tubingRows ?? tubingRows,
+    roofPurlinThickness: yieldOptions?.roofPurlinThickness ?? getTubingGaugeForSize(yieldTubingRows, roofSize),
+    privacyPanelPurlinThickness: yieldOptions?.privacyPanelPurlinThickness ?? (hasPrivacyPanels ? getTubingGaugeForSize(yieldTubingRows, privacySize) : ''),
+    tubingRows: yieldTubingRows,
     connectorRows: yieldOptions?.connectorRows ?? connectorRows,
     endCapRows: yieldOptions?.endCapRows ?? endCapRows,
     angleRows: yieldOptions?.angleRows ?? angleRows,
