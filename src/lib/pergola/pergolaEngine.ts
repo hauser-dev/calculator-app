@@ -101,19 +101,15 @@ export type PergolaQuoteRequest = {
 
 export type PergolaQuoteDiagramUnit = 'ft' | 'in' | 'mm'
 
-export type PergolaQuoteCutPlanSvgLine = PergolaYieldResult['cutPlans'][number]['lines'][number] & {
-  svg: string
-}
-
-export type PergolaQuoteCutPlanSvgSection = {
-  title: string
-  lines: PergolaQuoteCutPlanSvgLine[]
-}
-
-export type PergolaQuoteOutput = PergolaOutput & {
+export type PergolaQuoteRawOutput = PergolaOutput & {
   yieldResult: PergolaYieldResult
-  cutPlanSvgSections: PergolaQuoteCutPlanSvgSection[]
   pricingSubTotal: number
+}
+
+export type PergolaQuoteOutput = {
+  quote: number
+  visuals: string[]
+  raw: PergolaQuoteRawOutput
 }
 
 type ParityCase = {
@@ -419,6 +415,8 @@ const calculatePergola = (input: PergolaInput, options: CalculatePergolaOptions 
   }
 }
 
+type CutPlanLine = PergolaYieldResult['cutPlans'][number]['lines'][number]
+
 const formatThickness = (value: number | string | null | undefined): string => {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   return typeof value === 'string' ? value : ''
@@ -426,7 +424,7 @@ const formatThickness = (value: number | string | null | undefined): string => {
 
 const normalizeTubingSize = (value: string) => value.trim().toLowerCase().replace(/["'\s]/g, '')
 
-const getTubingGaugeForSize = (rows: typeof tubingRows, size: string): string => {
+const getTubingGaugeForSize = (rows: CalculatePergolaYieldOptions['tubingRows'], size: string): string => {
   const normalizedSize = normalizeTubingSize(size)
   if (!normalizedSize || normalizedSize === '-') return ''
 
@@ -467,17 +465,14 @@ const formatDiagramMeasurement = (value: number, unit: PergolaQuoteDiagramUnit) 
   return String(Number(value.toFixed(precision)))
 }
 
-const escapeSvgText = (value: string) =>
+const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
 
-const renderCutPlanSvg = (
-  line: PergolaYieldResult['cutPlans'][number]['lines'][number],
-  unit: PergolaQuoteDiagramUnit,
-) => {
+const renderCutPlanSvg = (line: CutPlanLine, unit: PergolaQuoteDiagramUnit) => {
   const viewWidth = 460
   const viewHeight = 112
   const beamX = 20
@@ -505,13 +500,13 @@ const renderCutPlanSvg = (
   const formatFt = (valueFt: number) => formatDiagramMeasurement(fromFeetForDiagram(valueFt, unit), unit)
   const cutMarkers = segments.map((segment) => segment.end).filter((position) => position < stockLength - 0.01)
   const parts: string[] = [
-    `<svg class="h-28 w-full min-w-[300px]" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="${escapeSvgText(`Cut diagram for ${formatFt(line.stockLengthFt)} ${unit} stock`)}">`,
-    `<text x="${beamX}" y="14" class="fill-muted-foreground text-[10px]">${escapeSvgText(`Scale: 0 ${unit} - ${formatFt(line.stockLengthFt)} ${unit}`)}</text>`,
+    `<svg class="h-28 w-full min-w-[300px]" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="${escapeHtml(`Cut diagram for ${formatFt(line.stockLengthFt)} ${unit} stock`)}">`,
+    `<text x="${beamX}" y="14" class="fill-muted-foreground text-[10px]">${escapeHtml(`Scale: 0 ${unit} - ${formatFt(line.stockLengthFt)} ${unit}`)}</text>`,
     `<line x1="${beamX}" y1="26" x2="${beamX + beamWidth}" y2="26" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
     `<line x1="${beamX}" y1="22" x2="${beamX}" y2="30" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
     `<line x1="${beamX + beamWidth}" y1="22" x2="${beamX + beamWidth}" y2="30" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
     `<text x="${beamX}" y="40" text-anchor="middle" class="fill-muted-foreground text-[9px]">0</text>`,
-    `<text x="${beamX + beamWidth}" y="40" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeSvgText(formatFt(line.stockLengthFt))}</text>`,
+    `<text x="${beamX + beamWidth}" y="40" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeHtml(formatFt(line.stockLengthFt))}</text>`,
     `<rect x="${beamX}" y="${beamY}" width="${beamWidth}" height="${beamHeight}" rx="3" class="fill-muted stroke-border" stroke-width="1" />`,
   ]
 
@@ -520,7 +515,7 @@ const renderCutPlanSvg = (
     const width = Math.max(toX(segment.end) - x, 1)
     parts.push(`<rect x="${x}" y="${beamY}" width="${width}" height="${beamHeight}" class="${index % 2 === 0 ? 'fill-emerald-500/35' : 'fill-sky-500/35'}" />`)
     if (width > 42) {
-      parts.push(`<text x="${x + width / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-foreground text-[9px]">${escapeSvgText(`${formatFt(segment.length)} ${unit}`)}</text>`)
+      parts.push(`<text x="${x + width / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-foreground text-[9px]">${escapeHtml(`${formatFt(segment.length)} ${unit}`)}</text>`)
     }
   })
 
@@ -536,7 +531,7 @@ const renderCutPlanSvg = (
     parts.push('<g>')
     parts.push(`<rect x="${wasteX}" y="${beamY}" width="${Math.max(endX - wasteX, 1)}" height="${beamHeight}" class="fill-muted-foreground/20" />`)
     if (endX - wasteX > 34) {
-      parts.push(`<text x="${(wasteX + endX) / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeSvgText(`${formatFt(wasteFt)} ${unit}`)}</text>`)
+      parts.push(`<text x="${(wasteX + endX) / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeHtml(`${formatFt(wasteFt)} ${unit}`)}</text>`)
     }
     parts.push('</g>')
   }
@@ -545,7 +540,7 @@ const renderCutPlanSvg = (
     const x = toX(position)
     parts.push('<g>')
     parts.push(`<line x1="${x}" y1="${beamY - 8}" x2="${x}" y2="${beamY + beamHeight + 22}" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" class="text-destructive" />`)
-    parts.push(`<text x="${x}" y="${index % 2 === 0 ? 86 : 101}" text-anchor="middle" class="fill-destructive text-[9px]">${escapeSvgText(formatFt(position))}</text>`)
+    parts.push(`<text x="${x}" y="${index % 2 === 0 ? 86 : 101}" text-anchor="middle" class="fill-destructive text-[9px]">${escapeHtml(formatFt(position))}</text>`)
     parts.push('</g>')
   })
 
@@ -553,46 +548,84 @@ const renderCutPlanSvg = (
   return parts.join('')
 }
 
-const buildCutPlanSvgSections = (
-  cutPlans: PergolaYieldResult['cutPlans'],
-  unit: PergolaQuoteDiagramUnit,
-): PergolaQuoteCutPlanSvgSection[] =>
-  cutPlans.map((section) => ({
-    title: section.title,
-    lines: section.lines.map((line) => ({
-      ...line,
-      svg: renderCutPlanSvg(line, unit),
-    })),
-  }))
+const buildCutPlanTableHtml = (sections: PergolaYieldResult['cutPlans'], unit: PergolaQuoteDiagramUnit) => {
+  const parts = ['<div class="pergola-cut-plans">']
+
+  if (!sections.length) {
+    parts.push('<p class="text-sm text-muted-foreground">No cutting plans calculated.</p>')
+    parts.push('</div>')
+    return parts.join('')
+  }
+
+  sections.forEach((section) => {
+    parts.push(`<section class="pergola-cut-plan-section space-y-3">`)
+    parts.push(`<h3 class="text-sm font-semibold">${escapeHtml(section.title)}</h3>`)
+    parts.push('<table class="border border-border">')
+    parts.push('<thead><tr>')
+    parts.push('<th class="w-[12%]"># of Stocks</th>')
+    parts.push(`<th class="w-[12%]">Supply (${escapeHtml(unit)})</th>`)
+    parts.push(`<th class="w-[24%]">Cuts (${escapeHtml(unit)})</th>`)
+    parts.push('<th>Cut Diagram</th>')
+    parts.push('</tr></thead>')
+    parts.push('<tbody>')
+    section.lines.forEach((line) => {
+      const supply = formatDiagramMeasurement(fromFeetForDiagram(line.stockLengthFt, unit), unit)
+      const cuts = line.cutsFt.map((cut) => formatDiagramMeasurement(fromFeetForDiagram(cut, unit), unit)).join(', ')
+      parts.push('<tr>')
+      parts.push(`<td>${line.stockCount}</td>`)
+      parts.push(`<td>${escapeHtml(supply)}</td>`)
+      parts.push(`<td>${escapeHtml(cuts)}</td>`)
+      parts.push(`<td>${renderCutPlanSvg(line, unit)}</td>`)
+      parts.push('</tr>')
+    })
+    parts.push('</tbody></table></section>')
+  })
+
+  parts.push('</div>')
+  return parts.join('')
+}
+
+const buildYieldRequest = (
+  input: PergolaInput,
+  quote: PergolaOutput,
+  yieldOptions: PergolaQuoteOptions['yieldOptions'] = {},
+): CalculatePergolaYieldOptions => {
+  const yieldTubingRows = yieldOptions.tubingRows ?? tubingRows
+  const roofSize = input.roof.customSize.trim() || input.roof.size
+  const privacySize = input.privacy.customSize.trim() || input.privacy.size
+  const hasPrivacyPanels = input.privacy.panelCountLength > 0 || input.privacy.panelCountDepth > 0
+
+  return {
+    input,
+    beamSize: quote.beamSize,
+    pieceCounts: quote.pieceCounts,
+    columnBeamThickness: yieldOptions.columnBeamThickness ?? formatThickness(quote.thickness.columnBeam ?? beamThicknessBySize[quote.beamSize]),
+    roofPurlinThickness: yieldOptions.roofPurlinThickness ?? getTubingGaugeForSize(yieldTubingRows, roofSize),
+    privacyPanelPurlinThickness: yieldOptions.privacyPanelPurlinThickness ?? (hasPrivacyPanels ? getTubingGaugeForSize(yieldTubingRows, privacySize) : ''),
+    tubingRows: yieldTubingRows,
+    connectorRows: yieldOptions.connectorRows ?? connectorRows,
+    endCapRows: yieldOptions.endCapRows ?? endCapRows,
+    angleRows: yieldOptions.angleRows ?? angleRows,
+    flatbarRows: yieldOptions.flatbarRows ?? flatbarRows,
+    onProgress: yieldOptions.onProgress,
+  }
+}
 
 const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQuoteOutput => {
   const { yieldOptions, cutDiagramUnit = 'ft', ...quoteOptions } = options
   const quote = calculatePergola(input, quoteOptions)
-  const yieldTubingRows = yieldOptions?.tubingRows ?? tubingRows
-  const roofSize = input.roof.customSize.trim() || input.roof.size
-  const privacySize = input.privacy.customSize.trim() || input.privacy.size
-  const hasPrivacyPanels = input.privacy.panelCountLength > 0 || input.privacy.panelCountDepth > 0
-  const yieldResult = calculatePergolaYield({
-    input,
-    beamSize: quote.beamSize,
-    pieceCounts: quote.pieceCounts,
-    columnBeamThickness: yieldOptions?.columnBeamThickness ?? formatThickness(quote.thickness.columnBeam ?? beamThicknessBySize[quote.beamSize]),
-    roofPurlinThickness: yieldOptions?.roofPurlinThickness ?? getTubingGaugeForSize(yieldTubingRows, roofSize),
-    privacyPanelPurlinThickness: yieldOptions?.privacyPanelPurlinThickness ?? (hasPrivacyPanels ? getTubingGaugeForSize(yieldTubingRows, privacySize) : ''),
-    tubingRows: yieldTubingRows,
-    connectorRows: yieldOptions?.connectorRows ?? connectorRows,
-    endCapRows: yieldOptions?.endCapRows ?? endCapRows,
-    angleRows: yieldOptions?.angleRows ?? angleRows,
-    flatbarRows: yieldOptions?.flatbarRows ?? flatbarRows,
-    onProgress: yieldOptions?.onProgress,
-  })
-  const cutPlanSvgSections = buildCutPlanSvgSections(yieldResult.cutPlans, cutDiagramUnit)
-
-  return {
+  const yieldResult = calculatePergolaYield(buildYieldRequest(input, quote, yieldOptions))
+  const pricingSubTotal = calculatePricingSubTotal(yieldResult.pricingSections)
+  const raw: PergolaQuoteRawOutput = {
     ...quote,
     yieldResult,
-    cutPlanSvgSections,
-    pricingSubTotal: calculatePricingSubTotal(yieldResult.pricingSections),
+    pricingSubTotal,
+  }
+
+  return {
+    quote: pricingSubTotal,
+    visuals: [buildCutPlanTableHtml(yieldResult.cutPlans, cutDiagramUnit)],
+    raw,
   }
 }
 
