@@ -472,13 +472,25 @@ const escapeHtml = (value: string) =>
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
 
+const SVG_COLORS = {
+  text: '#0f172a',
+  mutedText: '#64748b',
+  mutedFill: '#e2e8f0',
+  border: '#cbd5e1',
+  cutA: 'rgba(16, 185, 129, 0.35)',
+  cutB: 'rgba(14, 165, 233, 0.35)',
+  kerf: 'rgba(239, 68, 68, 0.45)',
+  marker: '#dc2626',
+  waste: 'rgba(100, 116, 139, 0.2)',
+}
+
 const renderCutPlanSvg = (line: CutPlanLine, unit: PergolaQuoteDiagramUnit) => {
-  const viewWidth = 460
-  const viewHeight = 112
-  const beamX = 20
-  const beamY = 44
-  const beamWidth = 420
-  const beamHeight = 18
+  const viewWidth = 720
+  const viewHeight = 170
+  const beamX = 36
+  const beamY = 70
+  const beamWidth = 648
+  const beamHeight = 30
   const stockLength = Math.max(line.stockLengthFt, 0.01)
   const segments: Array<{ start: number; end: number; length: number }> = []
   const kerfs: Array<{ start: number; end: number }> = []
@@ -500,38 +512,38 @@ const renderCutPlanSvg = (line: CutPlanLine, unit: PergolaQuoteDiagramUnit) => {
   const formatFt = (valueFt: number) => formatDiagramMeasurement(fromFeetForDiagram(valueFt, unit), unit)
   const cutMarkers = segments.map((segment) => segment.end).filter((position) => position < stockLength - 0.01)
   const parts: string[] = [
-    `<svg class="h-28 w-full min-w-[300px]" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="${escapeHtml(`Cut diagram for ${formatFt(line.stockLengthFt)} ${unit} stock`)}">`,
-    `<text x="${beamX}" y="14" class="fill-muted-foreground text-[10px]">${escapeHtml(`Scale: 0 ${unit} - ${formatFt(line.stockLengthFt)} ${unit}`)}</text>`,
-    `<line x1="${beamX}" y1="26" x2="${beamX + beamWidth}" y2="26" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
-    `<line x1="${beamX}" y1="22" x2="${beamX}" y2="30" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
-    `<line x1="${beamX + beamWidth}" y1="22" x2="${beamX + beamWidth}" y2="30" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
-    `<text x="${beamX}" y="40" text-anchor="middle" class="fill-muted-foreground text-[9px]">0</text>`,
-    `<text x="${beamX + beamWidth}" y="40" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeHtml(formatFt(line.stockLengthFt))}</text>`,
-    `<rect x="${beamX}" y="${beamY}" width="${beamWidth}" height="${beamHeight}" rx="3" class="fill-muted stroke-border" stroke-width="1" />`,
+    `<svg style="display:block;width:100%;min-width:560px;height:190px;" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="${escapeHtml(`Cut diagram for ${formatFt(line.stockLengthFt)} ${unit} stock`)}">`,
+    `<text x="${beamX}" y="24" fill="${SVG_COLORS.mutedText}" font-size="15">${escapeHtml(`Scale: 0 ${unit} - ${formatFt(line.stockLengthFt)} ${unit}`)}</text>`,
+    `<line x1="${beamX}" y1="42" x2="${beamX + beamWidth}" y2="42" stroke="${SVG_COLORS.mutedText}" stroke-width="1.5" />`,
+    `<line x1="${beamX}" y1="36" x2="${beamX}" y2="48" stroke="${SVG_COLORS.mutedText}" stroke-width="1.5" />`,
+    `<line x1="${beamX + beamWidth}" y1="36" x2="${beamX + beamWidth}" y2="48" stroke="${SVG_COLORS.mutedText}" stroke-width="1.5" />`,
+    `<text x="${beamX}" y="62" text-anchor="middle" fill="${SVG_COLORS.mutedText}" font-size="13">0</text>`,
+    `<text x="${beamX + beamWidth}" y="62" text-anchor="middle" fill="${SVG_COLORS.mutedText}" font-size="13">${escapeHtml(formatFt(line.stockLengthFt))}</text>`,
+    `<rect x="${beamX}" y="${beamY}" width="${beamWidth}" height="${beamHeight}" rx="4" fill="${SVG_COLORS.mutedFill}" stroke="${SVG_COLORS.border}" stroke-width="1.5" />`,
   ]
 
   segments.forEach((segment, index) => {
     const x = toX(segment.start)
     const width = Math.max(toX(segment.end) - x, 1)
-    parts.push(`<rect x="${x}" y="${beamY}" width="${width}" height="${beamHeight}" class="${index % 2 === 0 ? 'fill-emerald-500/35' : 'fill-sky-500/35'}" />`)
-    if (width > 42) {
-      parts.push(`<text x="${x + width / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-foreground text-[9px]">${escapeHtml(`${formatFt(segment.length)} ${unit}`)}</text>`)
+    parts.push(`<rect x="${x}" y="${beamY}" width="${width}" height="${beamHeight}" fill="${index % 2 === 0 ? SVG_COLORS.cutA : SVG_COLORS.cutB}" />`)
+    if (width > 58) {
+      parts.push(`<text x="${x + width / 2}" y="${beamY + 20}" text-anchor="middle" fill="${SVG_COLORS.text}" font-size="13">${escapeHtml(`${formatFt(segment.length)} ${unit}`)}</text>`)
     }
   })
 
   kerfs.forEach((kerf) => {
     const x = toX(kerf.start)
-    const width = Math.max(toX(kerf.end) - x, 1.5)
-    parts.push(`<rect x="${x}" y="${beamY - 2}" width="${width}" height="${beamHeight + 4}" class="fill-destructive/45" />`)
+    const width = Math.max(toX(kerf.end) - x, 2)
+    parts.push(`<rect x="${x}" y="${beamY - 3}" width="${width}" height="${beamHeight + 6}" fill="${SVG_COLORS.kerf}" />`)
   })
 
   if (wasteFt > 0.01) {
     const wasteX = toX(wasteStart)
     const endX = toX(stockLength)
     parts.push('<g>')
-    parts.push(`<rect x="${wasteX}" y="${beamY}" width="${Math.max(endX - wasteX, 1)}" height="${beamHeight}" class="fill-muted-foreground/20" />`)
-    if (endX - wasteX > 34) {
-      parts.push(`<text x="${(wasteX + endX) / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeHtml(`${formatFt(wasteFt)} ${unit}`)}</text>`)
+    parts.push(`<rect x="${wasteX}" y="${beamY}" width="${Math.max(endX - wasteX, 1)}" height="${beamHeight}" fill="${SVG_COLORS.waste}" />`)
+    if (endX - wasteX > 50) {
+      parts.push(`<text x="${(wasteX + endX) / 2}" y="${beamY + 20}" text-anchor="middle" fill="${SVG_COLORS.mutedText}" font-size="13">${escapeHtml(`${formatFt(wasteFt)} ${unit}`)}</text>`)
     }
     parts.push('</g>')
   }
@@ -539,8 +551,8 @@ const renderCutPlanSvg = (line: CutPlanLine, unit: PergolaQuoteDiagramUnit) => {
   cutMarkers.forEach((position, index) => {
     const x = toX(position)
     parts.push('<g>')
-    parts.push(`<line x1="${x}" y1="${beamY - 8}" x2="${x}" y2="${beamY + beamHeight + 22}" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" class="text-destructive" />`)
-    parts.push(`<text x="${x}" y="${index % 2 === 0 ? 86 : 101}" text-anchor="middle" class="fill-destructive text-[9px]">${escapeHtml(formatFt(position))}</text>`)
+    parts.push(`<line x1="${x}" y1="${beamY - 12}" x2="${x}" y2="${beamY + beamHeight + 34}" stroke="${SVG_COLORS.marker}" stroke-width="1.5" stroke-dasharray="5 5" />`)
+    parts.push(`<text x="${x}" y="${index % 2 === 0 ? 128 : 154}" text-anchor="middle" fill="${SVG_COLORS.marker}" font-size="13">${escapeHtml(formatFt(position))}</text>`)
     parts.push('</g>')
   })
 
@@ -549,33 +561,33 @@ const renderCutPlanSvg = (line: CutPlanLine, unit: PergolaQuoteDiagramUnit) => {
 }
 
 const buildCutPlanTableHtml = (sections: PergolaYieldResult['cutPlans'], unit: PergolaQuoteDiagramUnit) => {
-  const parts = ['<div class="pergola-cut-plans">']
+  const parts = ['<div style="display:grid;gap:18px;">']
 
   if (!sections.length) {
-    parts.push('<p class="text-sm text-muted-foreground">No cutting plans calculated.</p>')
+    parts.push('<p style="margin:0;color:#64748b;font-size:14px;">No cutting plans calculated.</p>')
     parts.push('</div>')
     return parts.join('')
   }
 
   sections.forEach((section) => {
-    parts.push(`<section class="pergola-cut-plan-section space-y-3">`)
-    parts.push(`<h3 class="text-sm font-semibold">${escapeHtml(section.title)}</h3>`)
-    parts.push('<table class="border border-border">')
+    parts.push('<section style="display:grid;gap:12px;">')
+    parts.push(`<h3 style="margin:0;color:#0f172a;font-size:15px;font-weight:600;">${escapeHtml(section.title)}</h3>`)
+    parts.push('<table style="width:100%;border-collapse:collapse;border:1px solid #cbd5e1;color:#0f172a;font-size:14px;">')
     parts.push('<thead><tr>')
-    parts.push('<th class="w-[12%]"># of Stocks</th>')
-    parts.push(`<th class="w-[12%]">Supply (${escapeHtml(unit)})</th>`)
-    parts.push(`<th class="w-[24%]">Cuts (${escapeHtml(unit)})</th>`)
-    parts.push('<th>Cut Diagram</th>')
+    parts.push('<th style="width:12%;border:1px solid #cbd5e1;padding:8px;text-align:left;background:#f8fafc;"># of Stocks</th>')
+    parts.push(`<th style="width:12%;border:1px solid #cbd5e1;padding:8px;text-align:left;background:#f8fafc;">Supply (${escapeHtml(unit)})</th>`)
+    parts.push(`<th style="width:24%;border:1px solid #cbd5e1;padding:8px;text-align:left;background:#f8fafc;">Cuts (${escapeHtml(unit)})</th>`)
+    parts.push('<th style="border:1px solid #cbd5e1;padding:8px;text-align:left;background:#f8fafc;">Cut Diagram</th>')
     parts.push('</tr></thead>')
     parts.push('<tbody>')
     section.lines.forEach((line) => {
       const supply = formatDiagramMeasurement(fromFeetForDiagram(line.stockLengthFt, unit), unit)
       const cuts = line.cutsFt.map((cut) => formatDiagramMeasurement(fromFeetForDiagram(cut, unit), unit)).join(', ')
       parts.push('<tr>')
-      parts.push(`<td>${line.stockCount}</td>`)
-      parts.push(`<td>${escapeHtml(supply)}</td>`)
-      parts.push(`<td>${escapeHtml(cuts)}</td>`)
-      parts.push(`<td>${renderCutPlanSvg(line, unit)}</td>`)
+      parts.push(`<td style="border:1px solid #cbd5e1;padding:8px;vertical-align:top;">${line.stockCount}</td>`)
+      parts.push(`<td style="border:1px solid #cbd5e1;padding:8px;vertical-align:top;">${escapeHtml(supply)}</td>`)
+      parts.push(`<td style="border:1px solid #cbd5e1;padding:8px;vertical-align:top;">${escapeHtml(cuts)}</td>`)
+      parts.push(`<td style="border:1px solid #cbd5e1;padding:8px;vertical-align:top;">${renderCutPlanSvg(line, unit)}</td>`)
       parts.push('</tr>')
     })
     parts.push('</tbody></table></section>')
