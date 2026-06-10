@@ -91,6 +91,7 @@ export type PergolaOutput = {
 
 export type PergolaQuoteOptions = CalculatePergolaOptions & {
   yieldOptions?: Partial<Omit<CalculatePergolaYieldOptions, 'input' | 'beamSize' | 'pieceCounts'>>
+  cutDiagramUnit?: PergolaQuoteDiagramUnit
 }
 
 export type PergolaQuoteRequest = {
@@ -98,8 +99,20 @@ export type PergolaQuoteRequest = {
   options?: PergolaQuoteOptions
 }
 
+export type PergolaQuoteDiagramUnit = 'ft' | 'in' | 'mm'
+
+export type PergolaQuoteCutPlanSvgLine = PergolaYieldResult['cutPlans'][number]['lines'][number] & {
+  svg: string
+}
+
+export type PergolaQuoteCutPlanSvgSection = {
+  title: string
+  lines: PergolaQuoteCutPlanSvgLine[]
+}
+
 export type PergolaQuoteOutput = PergolaOutput & {
   yieldResult: PergolaYieldResult
+  cutPlanSvgSections: PergolaQuoteCutPlanSvgSection[]
   pricingSubTotal: number
 }
 
@@ -439,8 +452,121 @@ const calculatePricingSubTotal = (pricingSections: PergolaYieldResult['pricingSe
     0,
   )
 
+const IN_PER_FT = 12
+const MM_PER_IN = 25.4
+
+const fromFeetForDiagram = (valueFt: number, unit: PergolaQuoteDiagramUnit) => {
+  if (unit === 'ft') return valueFt
+  if (unit === 'in') return valueFt * IN_PER_FT
+  return valueFt * IN_PER_FT * MM_PER_IN
+}
+
+const formatDiagramMeasurement = (value: number, unit: PergolaQuoteDiagramUnit) => {
+  if (!Number.isFinite(value)) return ''
+  const precision = unit === 'mm' ? 2 : 4
+  return String(Number(value.toFixed(precision)))
+}
+
+const escapeSvgText = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+const renderCutPlanSvg = (
+  line: PergolaYieldResult['cutPlans'][number]['lines'][number],
+  unit: PergolaQuoteDiagramUnit,
+) => {
+  const viewWidth = 460
+  const viewHeight = 112
+  const beamX = 20
+  const beamY = 44
+  const beamWidth = 420
+  const beamHeight = 18
+  const stockLength = Math.max(line.stockLengthFt, 0.01)
+  const segments: Array<{ start: number; end: number; length: number }> = []
+  const kerfs: Array<{ start: number; end: number }> = []
+  let totalConsumedFt = 0
+
+  line.cutsFt.forEach((cut, index) => {
+    const start = totalConsumedFt
+    const end = start + cut
+    const hasKerfAfter = index < line.kerfCount
+    const kerfEnd = hasKerfAfter ? end + line.kerfFt : end
+    segments.push({ start, end, length: cut })
+    if (hasKerfAfter) kerfs.push({ start: end, end: kerfEnd })
+    totalConsumedFt = kerfEnd
+  })
+
+  const wasteFt = Math.max(line.wasteFt, 0)
+  const wasteStart = Math.max(totalConsumedFt, 0)
+  const toX = (ft: number) => beamX + (Math.max(0, Math.min(ft, stockLength)) / stockLength) * beamWidth
+  const formatFt = (valueFt: number) => formatDiagramMeasurement(fromFeetForDiagram(valueFt, unit), unit)
+  const cutMarkers = segments.map((segment) => segment.end).filter((position) => position < stockLength - 0.01)
+  const parts: string[] = [
+    `<svg class="h-28 w-full min-w-[300px]" viewBox="0 0 ${viewWidth} ${viewHeight}" role="img" aria-label="${escapeSvgText(`Cut diagram for ${formatFt(line.stockLengthFt)} ${unit} stock`)}">`,
+    `<text x="${beamX}" y="14" class="fill-muted-foreground text-[10px]">${escapeSvgText(`Scale: 0 ${unit} - ${formatFt(line.stockLengthFt)} ${unit}`)}</text>`,
+    `<line x1="${beamX}" y1="26" x2="${beamX + beamWidth}" y2="26" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
+    `<line x1="${beamX}" y1="22" x2="${beamX}" y2="30" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
+    `<line x1="${beamX + beamWidth}" y1="22" x2="${beamX + beamWidth}" y2="30" stroke="currentColor" stroke-width="1" class="text-muted-foreground" />`,
+    `<text x="${beamX}" y="40" text-anchor="middle" class="fill-muted-foreground text-[9px]">0</text>`,
+    `<text x="${beamX + beamWidth}" y="40" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeSvgText(formatFt(line.stockLengthFt))}</text>`,
+    `<rect x="${beamX}" y="${beamY}" width="${beamWidth}" height="${beamHeight}" rx="3" class="fill-muted stroke-border" stroke-width="1" />`,
+  ]
+
+  segments.forEach((segment, index) => {
+    const x = toX(segment.start)
+    const width = Math.max(toX(segment.end) - x, 1)
+    parts.push(`<rect x="${x}" y="${beamY}" width="${width}" height="${beamHeight}" class="${index % 2 === 0 ? 'fill-emerald-500/35' : 'fill-sky-500/35'}" />`)
+    if (width > 42) {
+      parts.push(`<text x="${x + width / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-foreground text-[9px]">${escapeSvgText(`${formatFt(segment.length)} ${unit}`)}</text>`)
+    }
+  })
+
+  kerfs.forEach((kerf) => {
+    const x = toX(kerf.start)
+    const width = Math.max(toX(kerf.end) - x, 1.5)
+    parts.push(`<rect x="${x}" y="${beamY - 2}" width="${width}" height="${beamHeight + 4}" class="fill-destructive/45" />`)
+  })
+
+  if (wasteFt > 0.01) {
+    const wasteX = toX(wasteStart)
+    const endX = toX(stockLength)
+    parts.push('<g>')
+    parts.push(`<rect x="${wasteX}" y="${beamY}" width="${Math.max(endX - wasteX, 1)}" height="${beamHeight}" class="fill-muted-foreground/20" />`)
+    if (endX - wasteX > 34) {
+      parts.push(`<text x="${(wasteX + endX) / 2}" y="${beamY + 13}" text-anchor="middle" class="fill-muted-foreground text-[9px]">${escapeSvgText(`${formatFt(wasteFt)} ${unit}`)}</text>`)
+    }
+    parts.push('</g>')
+  }
+
+  cutMarkers.forEach((position, index) => {
+    const x = toX(position)
+    parts.push('<g>')
+    parts.push(`<line x1="${x}" y1="${beamY - 8}" x2="${x}" y2="${beamY + beamHeight + 22}" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3" class="text-destructive" />`)
+    parts.push(`<text x="${x}" y="${index % 2 === 0 ? 86 : 101}" text-anchor="middle" class="fill-destructive text-[9px]">${escapeSvgText(formatFt(position))}</text>`)
+    parts.push('</g>')
+  })
+
+  parts.push('</svg>')
+  return parts.join('')
+}
+
+const buildCutPlanSvgSections = (
+  cutPlans: PergolaYieldResult['cutPlans'],
+  unit: PergolaQuoteDiagramUnit,
+): PergolaQuoteCutPlanSvgSection[] =>
+  cutPlans.map((section) => ({
+    title: section.title,
+    lines: section.lines.map((line) => ({
+      ...line,
+      svg: renderCutPlanSvg(line, unit),
+    })),
+  }))
+
 const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQuoteOutput => {
-  const { yieldOptions, ...quoteOptions } = options
+  const { yieldOptions, cutDiagramUnit = 'ft', ...quoteOptions } = options
   const quote = calculatePergola(input, quoteOptions)
   const yieldTubingRows = yieldOptions?.tubingRows ?? tubingRows
   const roofSize = input.roof.customSize.trim() || input.roof.size
@@ -460,8 +586,14 @@ const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQ
     flatbarRows: yieldOptions?.flatbarRows ?? flatbarRows,
     onProgress: yieldOptions?.onProgress,
   })
+  const cutPlanSvgSections = buildCutPlanSvgSections(yieldResult.cutPlans, cutDiagramUnit)
 
-  return { ...quote, yieldResult, pricingSubTotal: calculatePricingSubTotal(yieldResult.pricingSections) }
+  return {
+    ...quote,
+    yieldResult,
+    cutPlanSvgSections,
+    pricingSubTotal: calculatePricingSubTotal(yieldResult.pricingSections),
+  }
 }
 
 export { calculatePergola, getPergolaQuote, syncPergolaPrivacyCoverageGap, syncPergolaRoofCoverageGap, validatePergolaInput }
