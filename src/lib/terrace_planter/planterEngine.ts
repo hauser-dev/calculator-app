@@ -9,6 +9,8 @@ import {
   buildFabricationDimensions,
   runPlanterSolver,
   type FabricationDimensions,
+  type Placement,
+  type SheetInstanceUsage,
   type SheetInventoryRow,
   type SolverResult,
 } from '@/lib/terrace_planter/planterSolver'
@@ -44,7 +46,7 @@ export type CalculateTerracePlanterRequest = {
   options?: CalculateTerracePlanterOptions
 }
 
-export type TerracePlanterCalculationResult = {
+export type TerracePlanterCalculationRawResult = {
   fabricationDims: FabricationDimensions
   volume: number
   breakdowns: CostBreakdownPreview[]
@@ -72,10 +74,67 @@ export type TerracePlanterCalculationResult = {
   actualMarginPct: number
 }
 
+export type TerracePlanterCalculationResult = {
+  quote: number
+  visuals: string
+  raw: TerracePlanterCalculationRawResult
+}
+
 const MAX_PLANTER_DIMENSION_IN = 120
+const CUT_PLAN_MAX_DISPLAY_DIMENSION = 500
+const CUT_PLAN_MIN_DISPLAY_SCALE = 0.95
+const CUT_PLAN_MAX_DISPLAY_SCALE = 4.25
+const INCH_TO_MM = 25.4
 const categoryList: Category[] = [...CATEGORY_LIST]
 
 const getBreakdownPrice = (row: CostBreakdownPreview) => row.overridePrice ?? row.basePrice
+
+type CutPlanPaletteEntry = {
+  background: string
+  border: string
+  text: string
+}
+
+const CUT_PLAN_PANEL_PALETTE: Record<string, CutPlanPaletteEntry> = {
+  floor: {
+    background: 'rgba(59, 130, 246, 0.25)',
+    border: 'rgba(59, 130, 246, 0.85)',
+    text: '#0f172a',
+  },
+  long: {
+    background: 'rgba(79, 70, 229, 0.25)',
+    border: 'rgba(79, 70, 229, 0.85)',
+    text: '#312e81',
+  },
+  short: {
+    background: 'rgba(6, 182, 212, 0.22)',
+    border: 'rgba(6, 182, 212, 0.8)',
+    text: '#0f172a',
+  },
+  liner: {
+    background: 'rgba(34, 197, 94, 0.28)',
+    border: 'rgba(16, 185, 129, 0.95)',
+    text: '#064e3b',
+  },
+  shelf: {
+    background: 'rgba(251, 113, 133, 0.35)',
+    border: 'rgba(220, 38, 38, 0.9)',
+    text: '#7f1d1d',
+  },
+  other: {
+    background: 'rgba(148, 163, 184, 0.25)',
+    border: 'rgba(148, 163, 184, 0.85)',
+    text: '#0f172a',
+  },
+}
+
+const CUT_PLAN_LEGEND_GROUPS = [
+  { label: 'Floor', group: 'floor' },
+  { label: 'Shelf', group: 'shelf' },
+  { label: 'Long side', group: 'long' },
+  { label: 'Short side', group: 'short' },
+  { label: 'Liner', group: 'liner' },
+]
 
 const cloneThresholds = (source?: Partial<Record<Category, CostThreshold>>) =>
   categoryList.reduce<Record<Category, CostThreshold>>((acc, category) => {
@@ -259,6 +318,177 @@ const buildSheetSummaries = (solverResult: SolverResult): TerracePlanterSheetSum
 const normalizeNumberInput = (value: number | string | null | undefined) =>
   value === null || value === undefined ? '' : String(value)
 
+type CutPlanMeasurementUnit = 'in' | 'mm'
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+const formatCurrency = (value: number) => (Number.isFinite(value) ? `$${value.toFixed(2)}` : '$0.00')
+
+const formatPercent = (value: number) => `${value.toFixed(1)}%`
+
+const formatCssPx = (value: number) => `${Number.isFinite(value) ? value.toFixed(2) : '0'}px`
+
+const toDisplayDimension = (valueInInches: number, unit: CutPlanMeasurementUnit) =>
+  unit === 'mm' ? valueInInches * INCH_TO_MM : valueInInches
+
+const formatPanelLengthWidthDimensions = (width: number, height: number, unit: CutPlanMeasurementUnit) =>
+  `${toDisplayDimension(width, unit).toFixed(1)} ${unit} x ${toDisplayDimension(height, unit).toFixed(1)} ${unit}`
+
+const formatDisplaySheetDimensions = (width: number, height: number, unit: CutPlanMeasurementUnit) =>
+  `${toDisplayDimension(width, unit).toFixed(2)} ${unit} x ${toDisplayDimension(height, unit).toFixed(2)} ${unit}`
+
+const computeSheetScale = (sheet: SheetInstanceUsage) => {
+  const maxDimension = Math.max(sheet.width, sheet.height, 1)
+  const suggestedScale = CUT_PLAN_MAX_DISPLAY_DIMENSION / maxDimension
+  return Math.max(CUT_PLAN_MIN_DISPLAY_SCALE, Math.min(CUT_PLAN_MAX_DISPLAY_SCALE, suggestedScale))
+}
+
+const getPanelGroup = (placement: Placement) => {
+  if (placement.isLiner || placement.panelType === 'liner' || placement.panelId.includes('liner')) {
+    return 'liner'
+  }
+  if (placement.panelType === 'shelf' || placement.panelId.includes('shelf')) {
+    return 'shelf'
+  }
+  if (
+    placement.panelType === 'floor' ||
+    placement.panelId.includes('floor') ||
+    placement.panelId.includes('bottom')
+  ) {
+    return 'floor'
+  }
+  if (placement.panelId.includes('long')) {
+    return 'long'
+  }
+  if (placement.panelId.includes('short')) {
+    return 'short'
+  }
+  return 'other'
+}
+
+const getPlacementStyle = (placement: Placement): CutPlanPaletteEntry => {
+  const group = getPanelGroup(placement)
+  return CUT_PLAN_PANEL_PALETTE[group] ?? CUT_PLAN_PANEL_PALETTE.other
+}
+
+const buildTerracePlanterCutPlanHtml = (
+  sheetUsages: SheetInstanceUsage[],
+  measurementUnit: CutPlanMeasurementUnit = 'in',
+) => {
+  const parts = [
+    '<div style="display:grid;gap:18px;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;">',
+    '<div style="display:grid;gap:4px;">',
+    '<h2 style="margin:0;color:#0f172a;font-size:18px;font-weight:700;line-height:1.25;">Cut plan</h2>',
+    '<p style="margin:0;color:#64748b;font-size:14px;line-height:1.45;">Each sheet card shows how panels stack and ties the layout back to the lowest material cost.</p>',
+    '</div>',
+  ]
+
+  if (!sheetUsages.length) {
+    parts.push('<p style="margin:0;color:#64748b;font-size:14px;">Run Calculate to see the cut plan for the chosen inventory.</p>')
+    parts.push('</div>')
+    return parts.join('')
+  }
+
+  for (const sheet of sheetUsages) {
+    const scale = computeSheetScale(sheet)
+    const displayWidth = sheet.width * scale
+    const displayHeight = sheet.height * scale
+    const sheetAreaSqft = (sheet.width * sheet.height) / 144
+    const usedSqft = sheet.areaUsedSqft
+    const utilizationPct = sheetAreaSqft ? (usedSqft / sheetAreaSqft) * 100 : 0
+    const sheetCost = sheetAreaSqft * sheet.costPerSqft
+    const sortedPlacements = [...sheet.placements].sort((a, b) => {
+      if (a.y !== b.y) return a.y - b.y
+      return a.x - b.x
+    })
+
+    parts.push('<section style="display:grid;gap:16px;border:1px solid #cbd5e1;background:#f8fafc;padding:16px;box-shadow:0 1px 2px rgba(15,23,42,0.05);">')
+    parts.push('<div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:16px;">')
+    parts.push('<div style="display:grid;flex:1 1 340px;min-width:240px;gap:12px;">')
+    parts.push('<div style="display:grid;gap:10px;">')
+    parts.push('<div>')
+    parts.push('<p style="margin:0;color:#64748b;font-size:11px;font-weight:600;letter-spacing:0.24em;text-transform:uppercase;">Sheet type</p>')
+    parts.push(`<p style="margin:4px 0 0;color:#0f172a;font-size:18px;font-weight:700;line-height:1.25;">${escapeHtml(sheet.name)}</p>`)
+    parts.push(`<p style="margin:2px 0 0;color:#64748b;font-size:12px;">Instance ${escapeHtml(sheet.id)}</p>`)
+    parts.push('</div>')
+    parts.push(`<p style="margin:0;color:#64748b;font-size:14px;">${sortedPlacements.length} panels - ${escapeHtml(formatDisplaySheetDimensions(sheet.width, sheet.height, measurementUnit))}</p>`)
+    parts.push('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;color:#64748b;font-size:14px;">')
+
+    const metrics = [
+      { label: 'Cost / sqft', value: formatCurrency(sheet.costPerSqft) },
+      { label: 'Cost / sheet', value: formatCurrency(sheetCost) },
+      { label: 'Area used', value: `${usedSqft.toFixed(2)} sq ft` },
+      { label: 'Utilization', value: formatPercent(utilizationPct) },
+    ]
+
+    for (const metric of metrics) {
+      parts.push('<div>')
+      parts.push(`<p style="margin:0;color:#64748b;font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;">${escapeHtml(metric.label)}</p>`)
+      parts.push(`<p style="margin:4px 0 0;color:#0f172a;font-size:16px;font-weight:700;">${escapeHtml(metric.value)}</p>`)
+      parts.push('</div>')
+    }
+
+    parts.push('</div>')
+    parts.push('</div>')
+    parts.push('<div style="display:grid;gap:10px;color:#64748b;font-size:14px;">')
+
+    for (const placement of sortedPlacements) {
+      const placementStyle = getPlacementStyle(placement)
+      parts.push('<div style="display:inline-flex;width:max-content;max-width:100%;align-items:center;border:1px solid #cbd5e1;background:#ffffff;padding:6px 10px;">')
+      parts.push(`<span style="display:inline-block;width:24px;height:8px;border:1px solid ${placementStyle.border};background:${placementStyle.background};margin-right:8px;"></span>`)
+      parts.push(`<span style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;color:#0f172a;font-weight:700;">${escapeHtml(placement.name)}`)
+      if (placement.panelType === 'shelf') {
+        parts.push('<span style="color:#64748b;font-size:11px;font-weight:500;">(shelf)</span>')
+      }
+      parts.push(`<span style="color:#64748b;font-size:13px;font-weight:500;">${escapeHtml(formatPanelLengthWidthDimensions(placement.width, placement.height, measurementUnit))}</span>`)
+      parts.push('</span></div>')
+    }
+
+    parts.push('</div>')
+    parts.push('</div>')
+    parts.push('<div style="flex:0 1 auto;max-width:100%;overflow:auto;">')
+    parts.push(`<div style="position:relative;box-sizing:border-box;overflow:hidden;border:1px solid #cbd5e1;background:#ffffff;box-shadow:inset 0 1px 3px rgba(15,23,42,0.08);width:${formatCssPx(displayWidth)};height:${formatCssPx(displayHeight)};min-width:280px;min-height:280px;">`)
+
+    for (const placement of sortedPlacements) {
+      const placementStyle = getPlacementStyle(placement)
+      const panelDisplayWidth = placement.width * scale
+      const panelDisplayHeight = placement.height * scale
+      const minPanelSide = Math.min(panelDisplayWidth, panelDisplayHeight)
+      const panelFontSize = Math.max(7, Math.min(11, minPanelSide * 0.14))
+      const showDimensions = minPanelSide >= 34
+      parts.push(`<div style="position:absolute;left:${formatCssPx(placement.x * scale)};top:${formatCssPx(placement.y * scale)};box-sizing:border-box;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden;border:1px solid ${placementStyle.border};background:${placementStyle.background};color:${placementStyle.text};width:${formatCssPx(panelDisplayWidth)};height:${formatCssPx(panelDisplayHeight)};padding:6px 6px 4px;font-size:${formatCssPx(panelFontSize)};font-weight:500;line-height:1;">`)
+      parts.push(`<span style="overflow-wrap:anywhere;font-weight:700;">${escapeHtml(placement.name)}</span>`)
+      if (showDimensions) {
+        parts.push(`<span style="overflow-wrap:anywhere;">${escapeHtml(formatPanelLengthWidthDimensions(placement.width, placement.height, measurementUnit))}</span>`)
+      }
+      parts.push('</div>')
+    }
+
+    if (!sortedPlacements.length) {
+      parts.push('<p style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;margin:0;color:#64748b;font-size:12px;">No placements recorded.</p>')
+    }
+
+    parts.push('</div></div></div></section>')
+  }
+
+  parts.push('<div style="display:flex;flex-wrap:wrap;gap:12px;color:#64748b;font-size:11px;letter-spacing:0.22em;text-transform:uppercase;">')
+  for (const entry of CUT_PLAN_LEGEND_GROUPS) {
+    const palette = CUT_PLAN_PANEL_PALETTE[entry.group] ?? CUT_PLAN_PANEL_PALETTE.other
+    parts.push('<div style="display:flex;align-items:center;gap:8px;">')
+    parts.push(`<span style="display:inline-block;width:28px;height:8px;border:1px solid ${palette.border};background:${palette.background};"></span>`)
+    parts.push(`<span>${escapeHtml(entry.label)}</span>`)
+    parts.push('</div>')
+  }
+  parts.push('</div></div>')
+
+  return parts.join('')
+}
+
 export const calculateTerracePlanter = (
   request: CalculateTerracePlanterRequest,
 ): TerracePlanterCalculationResult => {
@@ -326,7 +556,7 @@ export const calculateTerracePlanter = (
   const finalTotal = Math.max(0, suggestedSalePrice + bufferAmount - discountAmount)
   const actualMarginPct = finalTotal > 0 ? ((finalTotal - totalFabricationCost) / finalTotal) * 100 : 0
 
-  return {
+  const raw: TerracePlanterCalculationRawResult = {
     fabricationDims,
     volume,
     breakdowns,
@@ -352,5 +582,11 @@ export const calculateTerracePlanter = (
     hasSaleAdjustmentsInput,
     finalTotal,
     actualMarginPct,
+  }
+
+  return {
+    quote: finalTotal,
+    visuals: buildTerracePlanterCutPlanHtml(solverResult.sheetUsages),
+    raw,
   }
 }
