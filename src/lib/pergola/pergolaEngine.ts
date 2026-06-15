@@ -107,7 +107,7 @@ export type PergolaQuoteRawOutput = PergolaOutput & {
 }
 
 export type PergolaQuoteOutput = {
-  quote: number
+  subtotal: number
   visuals: string[]
   raw: PergolaQuoteRawOutput
 }
@@ -645,7 +645,7 @@ const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQ
   }
 
   return {
-    quote: pricingSubTotal,
+    subtotal: pricingSubTotal,
     visuals: [buildCutPlanTableHtml(yieldResult.cutPlans, cutDiagramUnit)],
     raw,
   }

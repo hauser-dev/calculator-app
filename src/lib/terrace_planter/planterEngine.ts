@@ -75,7 +75,7 @@ export type TerracePlanterCalculationRawResult = {
 }
 
 export type TerracePlanterCalculationResult = {
-  quote: number
+  subtotal: number
   visuals: string
   raw: TerracePlanterCalculationRawResult
 }
@@ -586,7 +586,7 @@ export const calculateTerracePlanter = (
   }
 
   return {
-    quote: finalTotal,
+    subtotal: totalFabricationCost,
     visuals: buildTerracePlanterCutPlanHtml(solverResult.sheetUsages),
     raw,
   }
