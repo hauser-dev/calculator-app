@@ -43,7 +43,7 @@ export type CalculateTerracePlanterOptions = {
 
 export type CalculateTerracePlanterRequest = {
   planterInput: PlanterInput
-  options?: CalculateTerracePlanterOptions
+  options?: CalculateTerracePlanterOptions | null
 }
 
 export type TerracePlanterCalculationRawResult = {
@@ -492,7 +492,8 @@ const buildTerracePlanterCutPlanHtml = (
 export const calculateTerracePlanter = (
   request: CalculateTerracePlanterRequest,
 ): TerracePlanterCalculationResult => {
-  const { planterInput, options = {} } = request
+  const { planterInput, options: requestOptions } = request
+  const options = requestOptions ?? {}
   const validationMessage = validatePlanterInput(planterInput)
   if (validationMessage) {
     throw new Error(validationMessage)
