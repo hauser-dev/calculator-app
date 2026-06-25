@@ -1145,6 +1145,107 @@ const renderStaticInputBox = (value: string, placeholder = '') => {
   return `<div style="box-sizing:border-box;display:flex;align-items:center;width:100%;min-height:36px;border:1px solid ${VISUAL_COLORS.border};border-radius:6px;background:${VISUAL_COLORS.background};padding:7px 12px;color:${VISUAL_COLORS.foreground};">${content}</div>`
 }
 
+const renderStaticField = (label: string, value: string, placeholder = '') =>
+  [
+    '<div style="display:grid;gap:8px;">',
+    `<label style="color:${VISUAL_COLORS.foreground};font-size:14px;line-height:20px;font-weight:500;">${escapeHtml(label)}</label>`,
+    renderStaticInputBox(value, placeholder),
+    '</div>',
+  ].join('')
+
+const renderStaticCheckbox = (label: string, checked: boolean) =>
+  [
+    '<div style="display:flex;height:40px;align-items:center;gap:12px;">',
+    `<span style="box-sizing:border-box;display:inline-flex;width:16px;height:16px;align-items:center;justify-content:center;border:1px solid ${checked ? VISUAL_COLORS.foreground : VISUAL_COLORS.border};border-radius:4px;background:${checked ? VISUAL_COLORS.foreground : VISUAL_COLORS.background};">`,
+    checked ? '<span style="display:block;width:4px;height:8px;border:solid white;border-width:0 2px 2px 0;transform:rotate(45deg);margin-top:-1px;"></span>' : '',
+    '</span>',
+    `<span style="color:${VISUAL_COLORS.foreground};font-size:14px;line-height:20px;">${escapeHtml(label)}</span>`,
+    '</div>',
+  ].join('')
+
+const buildInputCardHtml = (title: string, description: string | null, content: string, style = '') =>
+  [
+    `<div style="background:${VISUAL_COLORS.background};color:${VISUAL_COLORS.foreground};display:flex;flex-direction:column;gap:16px;border:1px solid ${VISUAL_COLORS.border};border-radius:12px;padding:24px;box-shadow:0 1px 2px 0 rgb(0 0 0 / 0.05);font-family:ui-sans-serif,system-ui,sans-serif;${style}">`,
+    '<div style="display:grid;gap:4px;">',
+    `<div style="font-weight:600;line-height:1;">${escapeHtml(title)}</div>`,
+    description ? `<div style="color:${VISUAL_COLORS.mutedForeground};font-size:14px;line-height:20px;">${escapeHtml(description)}</div>` : '',
+    '</div>',
+    content,
+    '</div>',
+  ].join('')
+
+const formatBaseValue = (value: number, unit: PergolaQuoteDiagramUnit) => `${formatDiagramMeasurement(value, unit)} ${unit}`
+const formatPlainValue = (value: number) => formatDiagramMeasurement(value, 'ft')
+
+const buildDimensionsInputHtml = (input: PergolaInput) =>
+  buildInputCardHtml(
+    'Dimensions',
+    'Enter pergola dimensions in the selected unit.',
+    [
+      '<div style="display:grid;gap:16px;grid-template-columns:repeat(2,minmax(0,1fr));">',
+      renderStaticField('Length', formatBaseValue(input.dimensions.lengthFt, 'ft')),
+      renderStaticField('Depth', formatBaseValue(input.dimensions.depthFt, 'ft')),
+      `<div style="grid-column:1 / -1;">${renderStaticField('Height', formatBaseValue(input.dimensions.heightFt, 'ft'))}</div>`,
+      '</div>',
+    ].join(''),
+  )
+
+const buildFeaturesInputHtml = (input: PergolaInput) => {
+  const typeDimensions = input.type === 'Grand Pergola' ? '6x6' : '4x4'
+
+  return buildInputCardHtml(
+    'Features',
+    'Configure core pergola options.',
+    [
+      '<div style="display:grid;gap:16px;grid-template-columns:repeat(2,minmax(0,1fr));align-items:end;">',
+      renderStaticField('Type', input.type),
+      renderStaticCheckbox('Electrical', input.electrical === 'Yes'),
+      renderStaticField('Dimensions', typeDimensions),
+      renderStaticCheckbox('Privacy panels', hasPrivacyPanels(input)),
+      '</div>',
+    ].join(''),
+  )
+}
+
+const buildRoofPurlinsInputHtml = (input: PergolaInput) =>
+  buildInputCardHtml(
+    'Roof Purlins',
+    null,
+    [
+      '<div style="display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr));">',
+      renderStaticField('Material', input.roof.material),
+      renderStaticField('Orientation', input.roof.orientation),
+      renderStaticField('Size', input.roof.size),
+      renderStaticField('Custom Size (AxB)', input.roof.customSize, 'optional'),
+      renderStaticField('Alignment', input.roof.alignment),
+      renderStaticField('Coverage (%)', formatPlainValue(input.roof.coveragePct)),
+      renderStaticField('Gap', formatBaseValue(input.roof.gapIn, 'in')),
+      '</div>',
+    ].join(''),
+  )
+
+const buildPrivacyPurlinsInputHtml = (input: PergolaInput) =>
+  buildInputCardHtml(
+    'Privacy Panel Purlins',
+    null,
+    [
+      '<div style="display:grid;gap:12px;grid-template-columns:repeat(2,minmax(0,1fr));">',
+      renderStaticField('Material', input.privacy.material),
+      renderStaticField('Orientation', input.privacy.orientation),
+      renderStaticField('Size', input.privacy.size),
+      renderStaticField('Custom Size (AxB)', input.privacy.customSize, 'optional'),
+      renderStaticField('Alignment', input.privacy.alignment),
+      renderStaticField('# Panels on length', formatPlainValue(input.privacy.panelCountLength)),
+      renderStaticField('# Panels on depth', formatPlainValue(input.privacy.panelCountDepth)),
+      renderStaticField('Ground clearance', formatBaseValue(input.privacy.groundClearanceIn, 'in')),
+      renderStaticField('Top clearance', formatBaseValue(input.privacy.topClearanceIn, 'in')),
+      renderStaticField('Coverage (%)', formatPlainValue(input.privacy.coveragePct)),
+      renderStaticField('Gap', formatBaseValue(input.privacy.gapIn, 'in')),
+      '</div>',
+    ].join(''),
+    hasPrivacyPanels(input) ? '' : 'opacity:0.7;',
+  )
+
 const renderOverviewMetric = (label: string, value: string) =>
   [
     `<div style="border:1px solid color-mix(in oklch, ${VISUAL_COLORS.border} 80%, transparent);background:color-mix(in oklch, ${VISUAL_COLORS.muted} 30%, transparent);border-radius:12px;padding:10px;">`,
@@ -1276,6 +1377,10 @@ const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQ
   return {
     subtotal: pricingSubTotal,
     visuals: [
+      buildDimensionsInputHtml(input),
+      buildFeaturesInputHtml(input),
+      buildRoofPurlinsInputHtml(input),
+      buildPrivacyPurlinsInputHtml(input),
       buildPergolaOverviewHtml(quote, yieldRequest),
       buildPieceBreakdownHtml(input, quote),
       buildCutPlanTableHtml(yieldResult.cutPlans, cutDiagramUnit),
