@@ -504,6 +504,48 @@ const getPlacementStyle = (placement: Placement): CutPlanPaletteEntry => {
   return CUT_PLAN_PANEL_PALETTE[group] ?? CUT_PLAN_PANEL_PALETTE.other
 }
 
+const buildTerracePlanterDetailsHtml = (
+  raw: TerracePlanterCalculationRawResult,
+  planterInput: PlanterInput,
+) => {
+  const inputMetrics = [
+    { label: 'Length', value: formatDimension(planterInput.length) },
+    { label: 'Width', value: formatDimension(planterInput.width) },
+    { label: 'Height', value: formatDimension(planterInput.height) },
+    { label: 'Lip', value: formatDimension(planterInput.lip, 3) },
+    { label: 'Thickness', value: formatDimension(planterInput.thickness, 3) },
+    { label: 'Target margin', value: formatPercent(planterInput.marginPct) },
+    {
+      label: 'Fabrication size',
+      value: `${formatDimension(raw.fabricationDims.length)} x ${formatDimension(raw.fabricationDims.width)} x ${formatDimension(raw.fabricationDims.height)}`,
+    },
+  ]
+  const featureMetrics = [
+    { label: 'Liner', value: planterInput.linerEnabled ? 'Enabled' : 'Disabled' },
+    { label: 'Weight plate', value: planterInput.weightPlateEnabled ? 'Enabled' : 'Disabled' },
+    { label: 'Shelf', value: planterInput.shelfEnabled ? 'Enabled' : 'Disabled' },
+    { label: 'Floor', value: planterInput.floorEnabled ? 'Enabled' : 'Disabled' },
+    { label: 'Allow panel splitting', value: planterInput.allowSplitting ? 'Enabled' : 'Disabled' },
+    { label: 'Liner depth', value: planterInput.linerEnabled ? formatDimension(planterInput.linerDepth) : 'Disabled' },
+    {
+      label: 'Liner thickness',
+      value: planterInput.linerEnabled ? formatDimension(planterInput.linerThickness, 3) : 'Disabled',
+    },
+  ]
+
+  return [
+    '<section style="display:grid;gap:14px;border:1px solid #cbd5e1;background:#ffffff;padding:16px;">',
+    buildVisualSectionHeaderHtml(
+      'Planter details',
+      'Snapshot of the current planter inputs, dimensions, and add-on feature selections.',
+    ),
+    buildMetricGridHtml(inputMetrics),
+    '<p style="margin:0;color:#64748b;font-size:11px;font-weight:600;letter-spacing:0.22em;text-transform:uppercase;">Features</p>',
+    buildMetricGridHtml(featureMetrics),
+    '</section>',
+  ].join('')
+}
+
 const buildTerracePlanterCostCompositionHtml = (raw: TerracePlanterCalculationRawResult) => {
   const metrics = [
     { label: 'Material cost', value: formatCurrency(raw.totalMaterialCost) },
@@ -704,6 +746,7 @@ const buildTerracePlanterVisualsHtml = (
 ) =>
   [
     '<div style="display:grid;gap:18px;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;">',
+    buildTerracePlanterDetailsHtml(raw, planterInput),
     buildTerracePlanterCostCompositionHtml(raw),
     buildTerracePlanterCostDetailsHtml(raw, planterInput, customDetailRows),
     buildTerracePlanterSheetBreakdownHtml(raw.sheetSummaries),
