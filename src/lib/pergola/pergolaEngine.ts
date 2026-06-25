@@ -1145,6 +1145,50 @@ const renderStaticInputBox = (value: string, placeholder = '') => {
   return `<div style="box-sizing:border-box;display:flex;align-items:center;width:100%;min-height:36px;border:1px solid ${VISUAL_COLORS.border};border-radius:6px;background:${VISUAL_COLORS.background};padding:7px 12px;color:${VISUAL_COLORS.foreground};">${content}</div>`
 }
 
+const renderOverviewMetric = (label: string, value: string) =>
+  [
+    `<div style="border:1px solid color-mix(in oklch, ${VISUAL_COLORS.border} 80%, transparent);background:color-mix(in oklch, ${VISUAL_COLORS.muted} 30%, transparent);border-radius:12px;padding:10px;">`,
+    `<p style="margin:0;color:${VISUAL_COLORS.mutedForeground};font-size:10.4px;line-height:16px;text-transform:uppercase;letter-spacing:0.25em;">${escapeHtml(label)}</p>`,
+    `<p style="margin:0;color:${VISUAL_COLORS.foreground};font-size:14px;line-height:20px;">${escapeHtml(value)}</p>`,
+    '</div>',
+  ].join('')
+
+const renderOverviewField = (label: string, value: string) =>
+  [
+    '<div style="display:grid;gap:8px;">',
+    `<label style="color:${VISUAL_COLORS.foreground};font-size:14px;line-height:20px;font-weight:500;">${escapeHtml(label)}</label>`,
+    renderStaticInputBox(value),
+    '</div>',
+  ].join('')
+
+const buildPergolaOverviewHtml = (quote: PergolaOutput, yieldRequest: CalculatePergolaYieldOptions) => {
+  const parts = [
+    `<div style="background:${VISUAL_COLORS.background};color:${VISUAL_COLORS.foreground};display:flex;flex-direction:column;gap:12px;border:1px solid color-mix(in oklch, ${VISUAL_COLORS.border} 75%, transparent);border-radius:12px;padding:24px;box-shadow:0 1px 2px 0 rgb(0 0 0 / 0.05);font-family:ui-sans-serif,system-ui,sans-serif;">`,
+    '<div style="display:grid;gap:4px;">',
+    '<div style="font-weight:600;line-height:1;">Pergola Overview</div>',
+    `<div style="color:${VISUAL_COLORS.mutedForeground};font-size:14px;line-height:20px;">Key output metrics and configuration summary.</div>`,
+    '</div>',
+    '<div style="display:grid;gap:16px;grid-template-columns:repeat(4,minmax(0,1fr));">',
+    renderOverviewMetric('Selected type', quote.suggestedType),
+    renderOverviewMetric('Beam size', quote.beamSize),
+    renderOverviewMetric('Roof # required', String(quote.pieceCounts.roofPurlins ?? '-')),
+    renderOverviewMetric('Side # required (L / D)', `${quote.pieceCounts.sidePurlinsLength ?? '-'} / ${quote.pieceCounts.sidePurlinsDepth ?? '-'}`),
+    '</div>',
+    '<div style="display:grid;gap:12px;grid-template-columns:repeat(3,minmax(0,1fr));">',
+    renderOverviewField('Column & Beam Thickness', yieldRequest.columnBeamThickness),
+    renderOverviewField('Roof Purlin Thickness', yieldRequest.roofPurlinThickness),
+    renderOverviewField('Privacy Panel Purlin Thickness', yieldRequest.privacyPanelPurlinThickness),
+    '</div>',
+  ]
+
+  quote.errors.forEach((error) => {
+    parts.push(`<p style="margin:0;color:${VISUAL_COLORS.destructive};font-size:14px;line-height:20px;">${escapeHtml(error)}</p>`)
+  })
+
+  parts.push('</div>')
+  return parts.join('')
+}
+
 const buildCostDetailsHtml = (pricingSections: PergolaYieldResult['pricingSections'], subtotal: number) => {
   const parts = [
     `<div style="background:${VISUAL_COLORS.background};color:${VISUAL_COLORS.foreground};display:flex;flex-direction:column;gap:24px;border:1px solid ${VISUAL_COLORS.border};border-radius:12px;padding:24px;box-shadow:0 1px 2px 0 rgb(0 0 0 / 0.05);font-family:ui-sans-serif,system-ui,sans-serif;">`,
@@ -1220,7 +1264,8 @@ const buildYieldRequest = (
 const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQuoteOutput => {
   const { yieldOptions, cutDiagramUnit = 'ft', ...quoteOptions } = options
   const quote = calculatePergola(input, quoteOptions)
-  const yieldResult = calculatePergolaYield(buildYieldRequest(input, quote, yieldOptions))
+  const yieldRequest = buildYieldRequest(input, quote, yieldOptions)
+  const yieldResult = calculatePergolaYield(yieldRequest)
   const pricingSubTotal = calculatePricingSubTotal(yieldResult.pricingSections)
   const raw: PergolaQuoteRawOutput = {
     ...quote,
@@ -1231,6 +1276,7 @@ const getPergolaQuote = ({ input, options = {} }: PergolaQuoteRequest): PergolaQ
   return {
     subtotal: pricingSubTotal,
     visuals: [
+      buildPergolaOverviewHtml(quote, yieldRequest),
       buildPieceBreakdownHtml(input, quote),
       buildCutPlanTableHtml(yieldResult.cutPlans, cutDiagramUnit),
       buildCostDetailsHtml(yieldResult.pricingSections, pricingSubTotal),
