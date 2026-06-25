@@ -514,7 +514,6 @@ const buildTerracePlanterDetailsHtml = (
     { label: 'Height', value: formatDimension(planterInput.height) },
     { label: 'Lip', value: formatDimension(planterInput.lip, 3) },
     { label: 'Thickness', value: formatDimension(planterInput.thickness, 3) },
-    { label: 'Target margin', value: formatPercent(planterInput.marginPct) },
     {
       label: 'Fabrication size',
       value: `${formatDimension(raw.fabricationDims.length)} x ${formatDimension(raw.fabricationDims.width)} x ${formatDimension(raw.fabricationDims.height)}`,
