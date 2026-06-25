@@ -540,7 +540,7 @@ const buildTerracePlanterCostDetailsHtml = (
       'Cost details',
       'Material and fabrication tiers are shown alongside liner/add-on costs. Tier selections follow the calculated volume.',
     ),
-    buildTableHtml(['Category', 'Tier used', 'Base price', 'Override price', 'Notes'], rows),
+    `<div style="padding-bottom:72px;">${buildTableHtml(['Category', 'Tier used', 'Base price', 'Override price', 'Notes'], rows)}</div>`,
     '<div style="clear:both;margin-top:14px;border:1px solid #cbd5e1;background:#f8fafc;padding:16px;">',
     '<p style="margin:0;color:#64748b;font-size:11px;font-weight:600;letter-spacing:0.22em;text-transform:uppercase;">Total cost</p>',
     `<p style="margin:4px 0 0;color:#0f172a;font-size:18px;font-weight:700;">${escapeHtml(formatCurrency(raw.totalFabricationCost))}</p>`,
