@@ -16,6 +16,8 @@ import {
 } from '@/lib/terrace_planter/planterSolver'
 
 export type TerracePlanterCustomDetailRow = {
+  category?: string
+  note?: string
   price: number | null
 }
 
@@ -333,6 +335,132 @@ const formatPercent = (value: number) => `${value.toFixed(1)}%`
 
 const formatCssPx = (value: number) => `${Number.isFinite(value) ? value.toFixed(2) : '0'}px`
 
+type TerracePlanterCostDetailVisualRow = {
+  category: string
+  tierUsed: string
+  basePrice: number
+  overridePrice: number | null
+  notes: string
+  isMaterial?: boolean
+}
+
+const buildVisualSectionHeaderHtml = (title: string, description: string) =>
+  [
+    '<div style="display:grid;gap:4px;">',
+    `<h2 style="margin:0;color:#0f172a;font-size:18px;font-weight:700;line-height:1.25;">${escapeHtml(title)}</h2>`,
+    `<p style="margin:0;color:#64748b;font-size:14px;line-height:1.45;">${escapeHtml(description)}</p>`,
+    '</div>',
+  ].join('')
+
+const buildMetricGridHtml = (metrics: Array<{ label: string; value: string }>) => {
+  const parts = ['<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">']
+  for (const metric of metrics) {
+    parts.push('<div style="border:1px solid #e2e8f0;background:#f8fafc;padding:10px;">')
+    parts.push(`<p style="margin:0;color:#64748b;font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;">${escapeHtml(metric.label)}</p>`)
+    parts.push(`<p style="margin:4px 0 0;color:#0f172a;font-size:16px;font-weight:700;">${escapeHtml(metric.value)}</p>`)
+    parts.push('</div>')
+  }
+  parts.push('</div>')
+  return parts.join('')
+}
+
+const buildTableHtml = (headers: string[], rows: string[][]) => {
+  const parts = [
+    '<div style="overflow-x:auto;">',
+    '<table style="width:100%;border-collapse:collapse;border:1px solid #cbd5e1;color:#0f172a;font-size:14px;">',
+    '<thead><tr>',
+  ]
+
+  for (const header of headers) {
+    parts.push(`<th style="border-bottom:1px solid #cbd5e1;background:#f8fafc;padding:10px;text-align:left;font-weight:700;">${escapeHtml(header)}</th>`)
+  }
+
+  parts.push('</tr></thead><tbody>')
+
+  for (const row of rows) {
+    parts.push('<tr>')
+    for (const cell of row) {
+      parts.push(`<td style="border-top:1px solid #e2e8f0;padding:10px;vertical-align:top;">${escapeHtml(cell)}</td>`)
+    }
+    parts.push('</tr>')
+  }
+
+  parts.push('</tbody></table></div>')
+  return parts.join('')
+}
+
+const buildCostDetailRows = (
+  raw: TerracePlanterCalculationRawResult,
+  planterInput: PlanterInput,
+  customDetailRows: TerracePlanterCustomDetailRow[],
+): TerracePlanterCostDetailVisualRow[] => {
+  const breakdownLookup = raw.breakdowns.reduce<Record<string, CostBreakdownPreview>>((acc, row) => {
+    acc[row.category] = row
+    return acc
+  }, {})
+  const cheapestSheet = raw.sheetSummaries.reduce<TerracePlanterSheetSummary | null>((current, next) => {
+    if (!current) return next
+    if (next.costPerSqft !== current.costPerSqft) {
+      return next.costPerSqft < current.costPerSqft ? next : current
+    }
+    return next.name.localeCompare(current.name) < 0 ? next : current
+  }, null)
+  const sheetNames = raw.sheetSummaries.map((entry) => entry.name).join(', ')
+  const rows: TerracePlanterCostDetailVisualRow[] = [
+    {
+      category: 'Material',
+      tierUsed: cheapestSheet ? cheapestSheet.name : 'Awaiting calculation',
+      basePrice: raw.totalMaterialCost,
+      overridePrice: null,
+      notes: `Material tier driven by ${cheapestSheet?.name ?? 'inventory'}${sheetNames ? ` (${sheetNames})` : ''}.`,
+      isMaterial: true,
+    },
+  ]
+
+  for (const category of categoryList) {
+    const breakdown = breakdownLookup[category]
+    const isDisabled =
+      (category === 'Weight Plate' && !planterInput.weightPlateEnabled) ||
+      (category === 'Liner' && !planterInput.linerEnabled) ||
+      (category === 'Shelf' && !planterInput.shelfEnabled)
+    const disabledName = category === 'Weight Plate' ? 'Weight plate' : category
+    const tierUsed = isDisabled ? 'Disabled' : breakdown?.tierUsed ?? '-'
+    const basePrice = isDisabled ? 0 : breakdown?.basePrice ?? 0
+    const overridePrice = isDisabled ? null : breakdown?.overridePrice ?? null
+    const notes = isDisabled
+      ? `${disabledName} feature disabled.`
+      : breakdown?.tierUsed === 'Not Selected'
+        ? `${category} is not selected yet.`
+        : category === 'Liner'
+          ? 'Liner labor tier applied.'
+          : category === 'Shelf'
+            ? 'Shelf tier applied.'
+            : category === 'Weight Plate'
+              ? 'Weight plate tier applied.'
+              : `${breakdown?.tierUsed ?? '-'} tier applied.`
+
+    rows.push({
+      category,
+      tierUsed,
+      basePrice,
+      overridePrice,
+      notes,
+    })
+  }
+
+  customDetailRows.forEach((row, index) => {
+    rows.push({
+      category: row.category?.trim() || `Custom category ${index + 1}`,
+      tierUsed: 'Custom',
+      basePrice: 0,
+      overridePrice: Number.isFinite(row.price) ? Math.max(0, row.price ?? 0) : null,
+      notes: row.note ?? '',
+    })
+  })
+
+  return rows
+}
+
 const toDisplayDimension = (valueInInches: number, unit: CutPlanMeasurementUnit) =>
   unit === 'mm' ? valueInInches * INCH_TO_MM : valueInInches
 
@@ -374,6 +502,86 @@ const getPanelGroup = (placement: Placement) => {
 const getPlacementStyle = (placement: Placement): CutPlanPaletteEntry => {
   const group = getPanelGroup(placement)
   return CUT_PLAN_PANEL_PALETTE[group] ?? CUT_PLAN_PANEL_PALETTE.other
+}
+
+const buildTerracePlanterCostCompositionHtml = (raw: TerracePlanterCalculationRawResult) => {
+  const metrics = [
+    { label: 'Material cost', value: formatCurrency(raw.totalMaterialCost) },
+    { label: 'Non-material cost', value: formatCurrency(raw.totalNonMaterialCost) },
+    { label: 'Sheet count', value: raw.sheetCount.toLocaleString() },
+    { label: 'Material yield', value: formatPercent(raw.utilizationPct) },
+  ]
+
+  return [
+    '<section style="display:grid;gap:14px;border:1px solid #cbd5e1;background:#ffffff;padding:16px;">',
+    buildVisualSectionHeaderHtml('Cost composition', 'Material and labor structure with yield visibility.'),
+    buildMetricGridHtml(metrics),
+    '</section>',
+  ].join('')
+}
+
+const buildTerracePlanterCostDetailsHtml = (
+  raw: TerracePlanterCalculationRawResult,
+  planterInput: PlanterInput,
+  customDetailRows: TerracePlanterCustomDetailRow[],
+) => {
+  const detailRows = buildCostDetailRows(raw, planterInput, customDetailRows)
+  const rows = detailRows.map((row) => [
+    row.category,
+    row.tierUsed,
+    formatCurrency(row.basePrice),
+    row.isMaterial ? 'Not applicable' : row.overridePrice === null ? '-' : formatCurrency(row.overridePrice),
+    row.notes,
+  ])
+
+  return [
+    '<section style="display:grid;gap:14px;border:1px solid #cbd5e1;background:#ffffff;padding:16px;">',
+    buildVisualSectionHeaderHtml(
+      'Cost details',
+      'Material and fabrication tiers are shown alongside liner/add-on costs. Tier selections follow the calculated volume.',
+    ),
+    buildTableHtml(['Category', 'Tier used', 'Base price', 'Override price', 'Notes'], rows),
+    '<div style="border:1px solid #cbd5e1;background:#f8fafc;padding:16px;">',
+    '<p style="margin:0;color:#64748b;font-size:11px;font-weight:600;letter-spacing:0.22em;text-transform:uppercase;">Total cost</p>',
+    `<p style="margin:4px 0 0;color:#0f172a;font-size:18px;font-weight:700;">${escapeHtml(formatCurrency(raw.totalFabricationCost))}</p>`,
+    '</div>',
+    '</section>',
+  ].join('')
+}
+
+const buildTerracePlanterSheetBreakdownHtml = (sheetSummaries: TerracePlanterSheetSummary[]) => {
+  const rows = sheetSummaries.map((sheet) => [
+    sheet.name,
+    sheet.quantityUsed.toLocaleString(),
+    formatCurrency(sheet.costPerSqft),
+    formatCurrency(sheet.costPerSheet),
+    formatCurrency(sheet.totalMaterialCost),
+    formatPercent(sheet.utilizationPct),
+    formatCurrency(sheet.unusedMaterialCost),
+  ])
+
+  return [
+    '<section style="display:grid;gap:14px;border:1px solid #cbd5e1;background:#ffffff;padding:16px;">',
+    buildVisualSectionHeaderHtml(
+      'Sheet breakdown',
+      "Each sheet type's utilization, unused material, and per-sheet cost encourage deterministic reuse and transparency.",
+    ),
+    sheetSummaries.length === 0
+      ? '<p style="margin:0;color:#64748b;font-size:14px;">Run Calculate to collect sheet usage data.</p>'
+      : buildTableHtml(
+          [
+            'Sheet type',
+            'Quantity used',
+            'Cost / sqft',
+            'Cost / sheet',
+            'Total material cost',
+            'Utilization %',
+            'Unused material cost',
+          ],
+          rows,
+        ),
+    '</section>',
+  ].join('')
 }
 
 const buildTerracePlanterCutPlanHtml = (
@@ -489,6 +697,20 @@ const buildTerracePlanterCutPlanHtml = (
   return parts.join('')
 }
 
+const buildTerracePlanterVisualsHtml = (
+  raw: TerracePlanterCalculationRawResult,
+  planterInput: PlanterInput,
+  customDetailRows: TerracePlanterCustomDetailRow[],
+) =>
+  [
+    '<div style="display:grid;gap:18px;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,sans-serif;">',
+    buildTerracePlanterCostCompositionHtml(raw),
+    buildTerracePlanterCostDetailsHtml(raw, planterInput, customDetailRows),
+    buildTerracePlanterSheetBreakdownHtml(raw.sheetSummaries),
+    buildTerracePlanterCutPlanHtml(raw.solverResult.sheetUsages),
+    '</div>',
+  ].join('')
+
 export const calculateTerracePlanter = (
   request: CalculateTerracePlanterRequest,
 ): TerracePlanterCalculationResult => {
@@ -587,7 +809,7 @@ export const calculateTerracePlanter = (
 
   return {
     subtotal: totalFabricationCost,
-    visuals: buildTerracePlanterCutPlanHtml(solverResult.sheetUsages),
+    visuals: buildTerracePlanterVisualsHtml(raw, planterInput, options.customDetailRows ?? []),
     raw,
   }
 }
